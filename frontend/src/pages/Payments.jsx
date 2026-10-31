@@ -69,10 +69,16 @@ export default function Payments() {
     payoutPhone: '',
     bankCode: '',
     bankAccount: '',
+    bankDarajaShortcode: '',
+    settlementDestinationType: 'bank',
+    darajaSettlementTillNumber: '',
     consumerKey: '',
     consumerSecret: '',
+    hasConsumerKey: false,
+    hasConsumerSecret: false,
     shortcode: '',
     passkey: '',
+    hasPasskey: false,
     tillNumber: '',
     environment: 'production',
   });
@@ -206,16 +212,23 @@ export default function Payments() {
       payoutPhone: data.payout_phone || '',
       bankCode: data.bank_code || '',
       bankAccount: data.bank_account_number || '',
-      consumerKey: data.daraja_consumer_key || '',
-      consumerSecret: data.daraja_consumer_secret || '',
+      bankDarajaShortcode: data.bank_daraja_shortcode || '',
+      settlementDestinationType: data.settlement_destination_type || 'bank',
+      darajaSettlementTillNumber: data.daraja_settlement_till_number || '',
+      consumerKey: '',
+      consumerSecret: '',
+      hasConsumerKey: Boolean(data.has_daraja_consumer_key),
+      hasConsumerSecret: Boolean(data.has_daraja_consumer_secret),
       shortcode: data.daraja_shortcode || '',
-      passkey: data.daraja_passkey || '',
+      passkey: '',
+      hasPasskey: Boolean(data.has_daraja_passkey),
       tillNumber: data.daraja_till_number || '',
       environment: data.daraja_environment || 'production',
       });
       const method = onlineMethod((data.payment_methods || [])[0]);
-      setSelectedMethod(['daraja_paybill', 'daraja_buygoods', 'paystack'].includes(method) ? method : 'daraja_paybill');
-      setSettlementStatus(data.bank_account_status || data.paystack_settlement_status || data.settlement_status || 'missing_payout_details');
+      const normalizedMethod = ['daraja_paybill', 'daraja_buygoods', 'paystack'].includes(method) ? method : 'daraja_paybill';
+      setSelectedMethod(normalizedMethod);
+      setSettlementStatus(normalizedMethod === 'paystack' ? (data.bank_account_status || data.paystack_settlement_status || data.settlement_status || 'missing_payout_details') : (data.daraja_b2b_settlement_status || 'missing_b2b_destination'));
     }).catch(() => {});
   }, []);
 
@@ -254,10 +267,13 @@ export default function Payments() {
         payout_phone: paymentSettings.payoutPhone,
         bank_code: paymentSettings.bankCode,
         bank_account_number: paymentSettings.bankAccount,
-        daraja_consumer_key: paymentSettings.consumerKey,
-        daraja_consumer_secret: paymentSettings.consumerSecret,
+        bank_daraja_shortcode: paymentSettings.bankDarajaShortcode,
+        settlement_destination_type: paymentSettings.settlementDestinationType,
+        daraja_settlement_till_number: paymentSettings.darajaSettlementTillNumber,
+        ...(paymentSettings.consumerKey ? { daraja_consumer_key: paymentSettings.consumerKey } : {}),
+        ...(paymentSettings.consumerSecret ? { daraja_consumer_secret: paymentSettings.consumerSecret } : {}),
         daraja_shortcode: paymentSettings.shortcode,
-        daraja_passkey: paymentSettings.passkey,
+        ...(paymentSettings.passkey ? { daraja_passkey: paymentSettings.passkey } : {}),
         daraja_till_number: paymentSettings.tillNumber,
         daraja_environment: paymentSettings.environment,
         daraja_shortcode_type: onlineMethod(selectedMethod) === 'daraja_buygoods' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline',
@@ -270,7 +286,7 @@ export default function Payments() {
         payload.payment_change_code = verificationCode.trim();
       }
       const { data } = await api.patch('/settings/business', payload);
-      setSettlementStatus(data.config?.bank_account_status || data.config?.paystack_settlement_status || data.config?.settlement_status || 'not_configured');
+      setSettlementStatus(selectedMethod === 'paystack' ? (data.config?.bank_account_status || data.config?.paystack_settlement_status || data.config?.settlement_status || 'not_configured') : (data.config?.daraja_b2b_settlement_status || 'missing_b2b_destination'));
       toast.success('Payment settings saved');
       setVerificationOpen(false);
       setMethodsOpen(false);
@@ -356,16 +372,25 @@ export default function Payments() {
 
       {methodsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><section className="theme-card max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg border p-5 shadow-xl">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div><h2 className="page-title text-base">Payment methods</h2><p className="page-subtitle">Choose how customers pay. Paystack receipts are pooled for withdrawals; Daraja is unchanged.</p></div>
+          <div><h2 className="page-title text-base">Payment methods</h2><p className="page-subtitle">Choose how customers pay. Daraja collections can settle to the saved bank through B2B when the bank Paybill and B2B credentials are configured.</p></div>
           <button type="button" className="btn-secondary" onClick={() => setMethodsOpen(false)}>Close</button>
         </div>
         <select className="form-input mt-4" value={selectedMethod} onChange={(e) => selectMethod(e.target.value)}><option value="paybill">Paybill</option><option value="daraja_paybill">Paybill - Daraja API</option><option value="buygoods">Buy Goods</option><option value="daraja_buygoods">Buy Goods - Daraja API</option><option value="paystack">Bank account</option></select>
         {selectedMethod === 'paystack' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="form-label">Bank<select className="form-input" value={paymentSettings.bankCode} onChange={(e) => setPaymentSettings((c) => ({ ...c, bankCode: e.target.value }))}><option value="">Select a bank</option>{paymentSettings.bankCode && !kenyanBanks.some((bank) => bank.code === paymentSettings.bankCode) && <option value={paymentSettings.bankCode}>Saved bank (code {paymentSettings.bankCode})</option>}{kenyanBanks.map((bank) => <option key={`${bank.code}-${bank.name}`} value={bank.code}>{bank.name}</option>)}</select></label><label className="form-label">Bank code<input className="form-input" value={paymentSettings.bankCode} readOnly placeholder="Selected bank code" /></label><label className="form-label">Bank account number<input className="form-input" placeholder="Enter bank account number" value={paymentSettings.bankAccount} onChange={(e) => setPaymentSettings((c) => ({ ...c, bankAccount: e.target.value }))} /></label><label className="form-label">Paybill or business number<input className="form-input" placeholder="Enter Paybill or business number" value={paymentSettings.businessNumber} onChange={(e) => setPaymentSettings((c) => ({ ...c, businessNumber: e.target.value }))} /></label></div>}
-        {selectedMethod === 'paystack' && <><label className="form-label mt-3">Saved M-Pesa withdrawal number<input className="form-input" placeholder="2547XXXXXXXX" value={paymentSettings.payoutPhone} onChange={(e) => setPaymentSettings((c) => ({ ...c, payoutPhone: e.target.value }))} /></label><p className="mt-3 text-xs text-slate-600">Paystack customer payments are pooled for tenant withdrawals. Save a bank account or M-Pesa number, or enter a different destination when withdrawing.</p>{!withdrawalSummary.manual_payouts_enabled && <p className="mt-2 text-xs font-medium text-amber-700">Paystack must enable manual payouts for the platform account before pooled payments and withdrawals can run.</p>}</>}
+        {selectedMethod === 'paystack' && <label className="form-label mt-3">Saved M-Pesa withdrawal number<input className="form-input" placeholder="2547XXXXXXXX" value={paymentSettings.payoutPhone} onChange={(e) => setPaymentSettings((c) => ({ ...c, payoutPhone: e.target.value }))} /></label>}
         {selectedMethod === 'paybill' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="form-label">Paybill number<input className="form-input" placeholder="Enter Paybill number" value={paymentSettings.businessNumber} onChange={(e) => setPaymentSettings((c) => ({ ...c, businessNumber: e.target.value }))} /></label><label className="form-label">Account number<input className="form-input" placeholder="Enter account number" value={paymentSettings.bankAccount} onChange={(e) => setPaymentSettings((c) => ({ ...c, bankAccount: e.target.value }))} /></label></div>}
         {selectedMethod === 'buygoods' && <div className="mt-4"><label className="form-label">Buy Goods till number<input className="form-input" placeholder="Enter Till number" value={paymentSettings.businessNumber} onChange={(e) => setPaymentSettings((c) => ({ ...c, businessNumber: e.target.value }))} /></label></div>}
         {selectedMethod === 'daraja_paybill' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><input className="form-input" placeholder="Consumer key" value={paymentSettings.consumerKey} onChange={(e) => setPaymentSettings((c) => ({ ...c, consumerKey: e.target.value }))} /><input className="form-input" type="password" placeholder="Consumer secret" value={paymentSettings.consumerSecret} onChange={(e) => setPaymentSettings((c) => ({ ...c, consumerSecret: e.target.value }))} /><input className="form-input" placeholder="M-Pesa shortcode" value={paymentSettings.shortcode} onChange={(e) => setPaymentSettings((c) => ({ ...c, shortcode: e.target.value }))} /><input className="form-input" value="CustomerPayBillOnline" readOnly /><input className="form-input" type="password" placeholder="M-Pesa passkey" value={paymentSettings.passkey} onChange={(e) => setPaymentSettings((c) => ({ ...c, passkey: e.target.value }))} /><select className="form-input" value={paymentSettings.environment} onChange={(e) => setPaymentSettings((c) => ({ ...c, environment: e.target.value }))}><option value="production">Production</option><option value="sandbox">Sandbox</option></select></div>}
         {selectedMethod === 'daraja_buygoods' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><input className="form-input" placeholder="Consumer key" value={paymentSettings.consumerKey} onChange={(e) => setPaymentSettings((c) => ({ ...c, consumerKey: e.target.value }))} /><input className="form-input" type="password" placeholder="Consumer secret" value={paymentSettings.consumerSecret} onChange={(e) => setPaymentSettings((c) => ({ ...c, consumerSecret: e.target.value }))} /><input className="form-input" type="password" placeholder="Passkey" value={paymentSettings.passkey} onChange={(e) => setPaymentSettings((c) => ({ ...c, passkey: e.target.value }))} /><input className="form-input" placeholder="M-Pesa shortcode" value={paymentSettings.shortcode} onChange={(e) => setPaymentSettings((c) => ({ ...c, shortcode: e.target.value }))} /><input className="form-input" value="CustomerBuyGoodsOnline" readOnly /><input className="form-input" placeholder="Buy Goods till number" value={paymentSettings.tillNumber} onChange={(e) => setPaymentSettings((c) => ({ ...c, tillNumber: e.target.value }))} /><select className="form-input" value={paymentSettings.environment} onChange={(e) => setPaymentSettings((c) => ({ ...c, environment: e.target.value }))}><option value="production">Production</option><option value="sandbox">Sandbox</option></select></div>}
+        <div className="mt-4 rounded-md border border-[var(--app-border)] p-3">
+          <h3 className="text-sm font-semibold">Daraja B2B settlement destination</h3>
+          <p className="mt-1 text-xs text-[var(--app-muted)]">Choose where tenant settlements go. Safaricom must enable the matching B2B product and shortcode permissions before live transfers.</p>
+          <label className="form-label mt-3">Destination type<select className="form-input" value={paymentSettings.settlementDestinationType} onChange={(e) => setPaymentSettings((c) => ({ ...c, settlementDestinationType: e.target.value }))}><option value="bank">Bank account via bank Paybill</option><option value="till">Tenant Buy Goods till</option></select></label>
+          {paymentSettings.settlementDestinationType === 'bank' ? <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="form-label">Bank M-Pesa Paybill shortcode<input className="form-input" inputMode="numeric" value={paymentSettings.bankDarajaShortcode} onChange={(e) => setPaymentSettings((c) => ({ ...c, bankDarajaShortcode: e.target.value }))} placeholder="Bank-provided Paybill shortcode" /></label>
+            <label className="form-label">Bank account number<input className="form-input" value={paymentSettings.bankAccount} onChange={(e) => setPaymentSettings((c) => ({ ...c, bankAccount: e.target.value }))} placeholder="Account reference" /></label>
+          </div> : <label className="form-label mt-3">Tenant Buy Goods till number<input className="form-input" inputMode="numeric" value={paymentSettings.darajaSettlementTillNumber} onChange={(e) => setPaymentSettings((c) => ({ ...c, darajaSettlementTillNumber: e.target.value }))} placeholder="Tenant till number" /></label>}
+        </div>
         <div className="mt-5 flex justify-end"><button type="button" className="btn-primary" onClick={savePaymentMethods} disabled={savingMethods}>{savingMethods ? 'Saving...' : 'Save payment methods'}</button></div>
         <p className={`mt-3 text-xs font-semibold ${['active', 'ready', 'withdrawal_ready'].includes(settlementStatus) ? 'text-emerald-600' : 'text-amber-600'}`}>{selectedMethod === 'paystack' ? 'Withdrawal destination' : 'Payment settings'}: {['active', 'ready', 'withdrawal_ready'].includes(settlementStatus) ? 'Ready' : settlementStatus.replaceAll('_', ' ')}</p>
       </section></div>}

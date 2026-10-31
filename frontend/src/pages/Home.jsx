@@ -130,11 +130,6 @@ export default function Home() {
       icon: CreditCard,
     },
     {
-      title: 'MikroTik Integration',
-      desc: 'Automatically activate and deactivate hotspot users on your MikroTik router through our API integration.',
-      icon: ShieldCheck,
-    },
-    {
       title: 'Customer Management',
       desc: 'Track customer activity, view purchase history, manage accounts, and monitor data usage in real time.',
       icon: Users,
@@ -143,11 +138,6 @@ export default function Home() {
       title: 'Analytics & Reports',
       desc: 'Get insights into revenue trends, peak usage hours, and customer growth with built-in dashboards.',
       icon: BarChart3,
-    },
-    {
-      title: 'Multi-Location Support',
-      desc: 'Manage multiple hotspot locations from a single dashboard with centralized billing and user control.',
-      icon: Globe,
     },
     {
       title: 'Task Management',
@@ -207,11 +197,11 @@ export default function Home() {
       </style>
 
       {/* --- HEADER --- */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-sm shadow-sm transition-all duration-300">
-        <div className="mx-auto max-w-6xl px-4 h-20 flex items-center justify-between">
+      <header className="fixed left-0 right-0 top-0 z-50 bg-white/95 shadow-sm backdrop-blur-sm transition-all duration-300">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:h-20">
           <a href="#hero" className="flex items-center gap-3">
             
-              <img src={logoUrl} alt={`${site.brand_name} logo`} className="sm:w-[130px] sm:h-[130px] w-[80px] h-[80px] object-contain object-left" />
+              <img src={logoUrl} alt={`${site.brand_name} logo`} className="h-14 w-36 object-contain object-left sm:h-16 sm:w-44" />
           
           </a>
 
@@ -240,8 +230,10 @@ export default function Home() {
           </div>
 
           <button
-            className="md:hidden text-2xl text-slate-800 focus:outline-none p-2"
+            className="md:hidden rounded-lg p-2 text-slate-800 transition hover:bg-slate-100 focus:outline-none"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={isMobileMenuOpen}
           >
             {isMobileMenuOpen ? '✕' : '☰'}
           </button>
@@ -271,14 +263,16 @@ export default function Home() {
         )}
       </header>
 
-      <main className="pt-20">
+      <main className="pt-16 sm:pt-20">
         {/* --- HERO SECTION --- */}
-        <section id="hero" className="relative min-h-[90vh] flex items-center justify-center overflow-hidden">
-          <div className="absolute inset-0 z-0">
+        <section id="hero" className="relative flex min-h-[calc(100svh-4rem)] items-center justify-center overflow-hidden py-14 sm:min-h-[90vh] sm:py-20">
+          <div className="absolute inset-0 z-0 bg-gradient-to-br from-[#061323] via-[#0b3150] to-[#07111f]">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_18%_28%,rgba(13,181,247,0.34),transparent_42%),radial-gradient(ellipse_at_84%_80%,rgba(37,99,235,0.28),transparent_38%),linear-gradient(125deg,#07111f_8%,#0d2946_58%,#07111f)]" />
             <img
               src={aboutImageUrl}
               alt=""
-              className="h-full w-full object-cover"
+              className="relative h-full w-full object-cover opacity-0 transition-opacity duration-700 data-[loaded=true]:opacity-100"
+              onLoad={(event) => event.currentTarget.dataset.loaded = 'true'}
               aria-hidden="true"
             />
             {/* Decorative pattern overlay */}
@@ -286,24 +280,24 @@ export default function Home() {
             <div className="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-900/70 to-slate-900/20 z-10"></div>
           </div>
 
-          <div className="mx-auto max-w-6xl px-4 relative z-20 text-left w-full">
+          <div className="relative z-20 mx-auto w-full max-w-6xl px-5 text-left sm:px-6 lg:px-4">
             <div className="max-w-3xl">
               <div className={`transition-all duration-1000 transform ${isTextVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0'}`}>
-                <p className="inline-block py-1 px-3 bg-[#0db5f7]/20 border border-[#0db5f7]/30 text-[#0db5f7] text-sm font-bold tracking-wider mb-6">
+                <p className="mb-4 inline-block border border-[#0db5f7]/30 bg-[#0db5f7]/20 px-3 py-1 text-xs font-bold tracking-wider text-[#0db5f7] sm:mb-6 sm:text-sm">
                   HOTSPOT BILLING PLATFORM
                 </p>
                 <h1
-                  className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-6 leading-tight"
+                  className="mb-5 text-4xl font-bold leading-[1.08] tracking-tight text-white [overflow-wrap:anywhere] sm:mb-6 sm:text-5xl md:text-6xl lg:text-7xl"
                 >
                   {heroSlides[currentSlide].heading}
                 </h1>
-                <p className="text-lg md:text-xl text-gray-300 mb-10 leading-relaxed font-light max-w-2xl border-l-4 border-[#0db5f7] pl-6">
+                <p className="mb-7 max-w-2xl border-l-4 border-[#0db5f7] pl-4 text-base font-light leading-relaxed text-gray-300 sm:mb-10 sm:pl-6 sm:text-lg md:text-xl">
                   {heroSlides[currentSlide].subtext}
                 </p>
               </div>
 
               {/* Slide Indicators */}
-              <div className="flex gap-2 mb-8">
+              <div className="mb-6 flex gap-2 sm:mb-8">
                 {heroSlides.map((_, idx) => (
                   <button
                     key={idx}
@@ -320,17 +314,17 @@ export default function Home() {
                 ))}
               </div>
 
-              <div className="mt-8 flex flex-wrap gap-4">
+              <div className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row sm:flex-wrap sm:gap-4">
                 <Link
                   to={site.cta_url || '/register'}
-                  className="inline-flex items-center bg-[#0db5f7] hover:bg-[#0ba3e0] text-white font-bold py-4 px-8 rounded-full transition-all transform hover:-translate-y-1 hover:shadow-[0_10px_20px_rgba(13,181,247,0.3)] animate-pulse-glow"
+                  className="inline-flex min-h-12 items-center justify-center rounded-full bg-[#0db5f7] px-6 py-3 font-bold text-white transition-all hover:bg-[#0ba3e0] sm:px-8 sm:py-4"
                 >
                   {site.cta_label || 'Register your business'}
                   <ChevronRight size={20} className="ml-2" />
                 </Link>
                 <a
                   href="#about"
-                  className="inline-flex items-center bg-transparent border-2 border-white text-white hover:bg-white hover:text-slate-900 font-bold py-4 px-8 rounded-full transition-all"
+                  className="inline-flex min-h-12 items-center justify-center rounded-full border-2 border-white bg-transparent px-6 py-3 font-bold text-white transition-all hover:bg-white hover:text-slate-900 sm:px-8 sm:py-4"
                 >
                   Learn More
                 </a>
@@ -341,28 +335,29 @@ export default function Home() {
 
         {/* --- ABOUT SECTION --- */}
         <RevealOnScroll>
-          <section id="about" className="py-24 bg-white relative">
+          <section id="about" className="relative bg-white py-16 sm:py-24">
             <div className="absolute top-0 right-0 w-1/3 h-full bg-slate-50 -z-10 hidden lg:block rounded-l-[100px]"></div>
             <div className="mx-auto max-w-6xl px-4">
-              <div className="flex flex-col lg:flex-row items-center gap-16">
+              <div className="flex flex-col items-center gap-10 lg:flex-row lg:gap-16">
                 <div className="w-full lg:w-1/2 relative group">
                   <div className="absolute -inset-4 bg-[#0db5f7]/20 rounded-[2rem] rotate-3 transition-transform group-hover:rotate-6"></div>
-                  <div className="rounded-2xl shadow-2xl w-full h-[500px] relative z-10 overflow-hidden bg-slate-100">
+                  <div className="relative z-10 h-72 w-full overflow-hidden rounded-2xl bg-gradient-to-br from-cyan-100 via-sky-50 to-blue-100 shadow-2xl sm:h-96 lg:h-[500px]">
                     <img
                       src={aboutImageUrl}
                       alt="Expressnetbilling platform preview"
-                      className="block h-full w-full object-cover"
+                      className="block h-full w-full object-cover opacity-0 transition-opacity duration-700 data-[loaded=true]:opacity-100"
+                      onLoad={(event) => event.currentTarget.dataset.loaded = 'true'}
                     />
                   </div>
                 </div>
                 <div className="w-full lg:w-1/2">
                   <RevealOnScroll delay={200}>
-                    <h2 className="text-4xl font-bold mb-6 text-slate-900">About Us</h2>
+                    <h2 className="mb-5 text-3xl font-bold text-slate-900 sm:mb-6 sm:text-4xl">About Us</h2>
                     <div className="w-20 h-1.5 bg-[#0db5f7] mb-8 rounded-full"></div>
-                    <p className="text-lg leading-relaxed text-gray-600 mb-4">
+                    <p className="mb-4 text-base leading-relaxed text-gray-600 sm:text-lg">
                       {site.about}
                     </p>
-                    <p className="text-lg leading-relaxed text-gray-600 mb-8">
+                    <p className="mb-6 text-base leading-relaxed text-gray-600 sm:mb-8 sm:text-lg">
                       Whether you run a single hotspot or manage dozens of locations, our platform scales with your business. Automate user activation, streamline payments, and keep your customers connected — all from one secure dashboard.
                     </p>
                     <div className="flex flex-wrap gap-4">
@@ -382,30 +377,30 @@ export default function Home() {
 
         {/* --- FEATURES SECTION --- */}
         <RevealOnScroll>
-          <section id="features" className="py-24 bg-slate-50 relative overflow-hidden">
+          <section id="features" className="relative overflow-hidden bg-slate-50 py-16 sm:py-24">
             <div className="absolute top-0 left-0 w-full h-full opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '30px 30px' }}></div>
 
             <div className="mx-auto max-w-6xl px-4 relative z-10">
               <RevealOnScroll delay={100}>
-                <div className="text-center mb-16 max-w-2xl mx-auto">
+                <div className="mx-auto mb-10 max-w-2xl text-center sm:mb-16">
                   <span className="text-[#0db5f7] font-bold tracking-widest uppercase text-sm mb-2 block">Platform Features</span>
-                  <h2 className="text-4xl font-bold text-slate-900 mb-4">Everything You Need to Run Your Hotspot</h2>
-                  <p className="text-slate-500 text-lg">Powerful tools designed specifically for internet service providers and hotspot operators.</p>
+                  <h2 className="mb-4 text-3xl font-bold text-slate-900 sm:text-4xl">Platform features to help you run and manage the hotspot</h2>
+                  <p className="text-base text-slate-500 sm:text-lg">Powerful tools designed specifically for internet service providers and hotspot operators.</p>
                 </div>
               </RevealOnScroll>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-8">
                 {features.map((feature, idx) => {
                   const Icon = feature.icon;
                   return (
                     <RevealOnScroll key={idx} delay={idx * 200 + 300}>
-                      <div className="group bg-white rounded-3xl shadow-lg hover:shadow-[0_20px_40px_-15px_rgba(0,0,0,0.1)] transition-all duration-500 overflow-hidden flex flex-col h-full border border-slate-100 p-10 relative">
+                      <div className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white p-6 shadow-lg transition-all duration-300 hover:shadow-xl sm:rounded-3xl sm:p-8 lg:p-10">
                         {/* Floating badge */}
-                        <div className="absolute top-6 right-6 w-13 h-13 bg-white rounded-full shadow-md flex items-center justify-center text-[#0db5f7] text-2xl border-4 border-slate-50 transition-transform duration-500 group-hover:scale-110 group-hover:-top-8">
-                          <Icon size={24} className="group-hover:animate-float" />
+                        <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl border border-sky-100 bg-sky-50 text-[#0db5f7] transition-transform duration-300 group-hover:scale-105 sm:absolute sm:right-6 sm:top-6 sm:mb-0 sm:rounded-full sm:border-4 sm:border-slate-50 sm:bg-white">
+                          <Icon size={22} />
                         </div>
 
-                        <h3 className="text-2xl font-bold text-slate-900 mb-3 mt-2 group-hover:text-[#0db5f7] transition-colors">{feature.title}</h3>
+                        <h3 className="mb-3 mt-1 text-xl font-bold text-slate-900 transition-colors group-hover:text-[#0db5f7] sm:mt-2 sm:pr-12 sm:text-2xl">{feature.title}</h3>
                         <p className="text-slate-500 leading-relaxed mb-6 flex-grow">{feature.desc}</p>
 
                         <a href="#features" className="inline-flex items-center text-[#0db5f7] font-bold hover:gap-2 transition-all animate-pulse-glow rounded-full">
@@ -422,17 +417,17 @@ export default function Home() {
 
         {/* --- HOW IT WORKS SECTION --- */}
         <RevealOnScroll>
-          <section className="py-24 bg-white">
+          <section className="bg-white py-16 sm:py-24">
             <div className="mx-auto max-w-6xl px-4">
               <RevealOnScroll delay={100}>
-                <div className="text-center mb-16 max-w-2xl mx-auto">
+                <div className="mx-auto mb-10 max-w-2xl text-center sm:mb-16">
                   <span className="text-[#0db5f7] font-bold tracking-widest uppercase text-sm mb-2 block">How It Works</span>
-                  <h2 className="text-4xl font-bold text-slate-900 mb-4">Get Started in 3 Simple Steps</h2>
-                  <p className="text-slate-500 text-lg">From registration to activating your first customer — it only takes minutes.</p>
+                  <h2 className="mb-4 text-3xl font-bold text-slate-900 sm:text-4xl">Get Started in 3 Simple Steps</h2>
+                  <p className="text-base text-slate-500 sm:text-lg">From registration to activating your first customer — it only takes minutes.</p>
                 </div>
               </RevealOnScroll>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-3 lg:gap-8">
                 {[
                   {
                     step: '01',
@@ -451,8 +446,8 @@ export default function Home() {
                   },
                 ].map((item, idx) => (
                   <RevealOnScroll key={idx} delay={idx * 200 + 200}>
-                    <div className="relative bg-slate-50 rounded-3xl p-10 text-center group hover:bg-[#0db5f7] transition-all duration-500 border border-slate-100 hover:border-[#0db5f7]">
-                      <span className="inline-block text-6xl font-extrabold text-[#0db5f7] opacity-20 group-hover:text-white group-hover:opacity-30 transition-colors mb-4">{item.step}</span>
+                    <div className="group relative rounded-2xl border border-slate-100 bg-slate-50 p-7 text-center transition-all duration-300 hover:border-[#0db5f7] hover:bg-[#0db5f7] sm:rounded-3xl sm:p-10">
+                      <span className="mb-4 inline-block text-5xl font-extrabold text-[#0db5f7] opacity-20 transition-colors group-hover:text-white sm:text-6xl">{item.step}</span>
                       <h3 className="text-xl font-bold text-slate-900 group-hover:text-white mb-3 transition-colors">{item.title}</h3>
                       <p className="text-slate-500 group-hover:text-white/80 leading-relaxed transition-colors">{item.desc}</p>
                     </div>
@@ -464,7 +459,7 @@ export default function Home() {
                 <div className="text-center mt-16">
                   <Link
                     to={site.cta_url || '/register'}
-                    className="inline-flex items-center bg-[#0db5f7] hover:bg-[#0ba3e0] text-white font-bold py-4 px-10 rounded-full transition-all transform hover:-translate-y-1 hover:shadow-[0_10px_20px_rgba(13,181,247,0.3)] animate-pulse-glow text-lg"
+                    className="inline-flex min-h-12 items-center justify-center rounded-full bg-[#0db5f7] px-7 py-3 text-base font-bold text-white transition-all hover:bg-[#0ba3e0] sm:px-10 sm:py-4 sm:text-lg"
                   >
                     {site.cta_label || 'Register your business'}
                     <ChevronRight size={22} className="ml-2" />
@@ -498,23 +493,23 @@ export default function Home() {
 
         {/* --- CONTACT SECTION --- */}
         <RevealOnScroll>
-          <section id="contact" className="py-24 bg-white">
+          <section id="contact" className="bg-white py-16 sm:py-24">
             <div className="mx-auto max-w-6xl px-4">
-              <div className="flex flex-col lg:flex-row gap-16">
+              <div className="flex flex-col gap-10 lg:flex-row lg:gap-16">
 
                 {/* Info Column */}
-                <div className="w-full lg:w-1/2 space-y-12">
+                <div className="w-full space-y-8 lg:w-1/2 lg:space-y-12">
                   <RevealOnScroll delay={100}>
                     <div>
                       <span className="text-[#0db5f7] font-bold tracking-widest uppercase text-sm mb-2 block">Get In Touch</span>
-                      <h2 className="text-4xl font-bold text-slate-900 mb-4">Contact Us</h2>
-                      <p className="text-slate-500 text-lg leading-relaxed">
+                      <h2 className="mb-4 text-3xl font-bold text-slate-900 sm:text-4xl">Contact Us</h2>
+                      <p className="text-base leading-relaxed text-slate-500 sm:text-lg">
                         Have questions or need support? Reach out to us and our team will get back to you as soon as possible.
                       </p>
                     </div>
                   </RevealOnScroll>
 
-                  <div className="h-[300px] w-full rounded-3xl overflow-hidden shadow-xl bg-slate-100 relative">
+                  <div className="relative h-56 w-full overflow-hidden rounded-2xl bg-slate-100 shadow-xl sm:h-[300px] sm:rounded-3xl">
                     <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
                       <MapPin size={40} className="text-slate-300 animate-pulse" />
                     </div>
@@ -535,22 +530,22 @@ export default function Home() {
 
                 {/* CTA Card Column */}
                 <div className="w-full lg:w-1/2">
-                  <div className="bg-gradient-to-br from-[#0f172a] to-[#0c4a6e] p-8 lg:p-12 rounded-3xl shadow-2xl relative overflow-hidden text-white">
+                  <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#0f172a] to-[#0c4a6e] p-6 text-white shadow-2xl sm:rounded-3xl sm:p-8 lg:p-12">
                     {/* Decorative blurs */}
                     <div className="absolute top-0 right-0 w-64 h-64 bg-[#0db5f7] rounded-full blur-[100px] opacity-20 -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
                     <div className="absolute bottom-0 left-0 w-32 h-32 bg-cyan-400 rounded-full blur-[80px] translate-y-1/2 -translate-x-1/2 pointer-events-none"></div>
 
                     <div className="relative z-10">
-                      <div className="mb-8 flex h-16 w-56 items-center overflow-hidden rounded-full bg-white px-4 shadow-lg shadow-black/20">
+                      <div className="mb-6 flex h-14 w-48 items-center overflow-hidden rounded-full bg-white px-4 shadow-lg shadow-black/20 sm:mb-8 sm:h-16 sm:w-56">
                         <img src={logoUrl} alt={`${site.brand_name} logo`} className="h-12 w-full object-contain object-left" />
                       </div>
 
-                      <h3 className="text-3xl font-bold mb-4">Ready to Grow Your Hotspot Business?</h3>
-                      <p className="text-slate-300 leading-relaxed mb-8 text-lg">
+                      <h3 className="mb-4 text-2xl font-bold sm:text-3xl">Ready to Grow Your Hotspot Business?</h3>
+                      <p className="mb-6 text-base leading-relaxed text-slate-300 sm:mb-8 sm:text-lg">
                         Join hundreds of hotspot operators who trust our platform to manage their billing, payments, and user activation. Get started in minutes.
                       </p>
 
-                      <div className="space-y-4 mb-10">
+                      <div className="mb-8 space-y-4 sm:mb-10">
                         {[
                           'Automated MikroTik user activation',
                           'Secure M-Pesa payment collection',
@@ -568,7 +563,7 @@ export default function Home() {
 
                       <Link
                         to={site.cta_url || '/register'}
-                        className="inline-flex items-center bg-[#0db5f7] hover:bg-[#0ba3e0] text-white font-bold py-4 px-10 rounded-full transition-all shadow-lg shadow-[#0db5f7]/30 hover:shadow-[#0db5f7]/50 transform hover:-translate-y-0.5 active:translate-y-0 text-lg w-full justify-center"
+                        className="inline-flex min-h-12 w-full items-center justify-center rounded-full bg-[#0db5f7] px-6 py-3 text-base font-bold text-white shadow-lg shadow-[#0db5f7]/30 transition-all hover:bg-[#0ba3e0] sm:px-10 sm:py-4 sm:text-lg"
                       >
                         <span>{site.cta_label || 'Register your business'}</span>
                         <ChevronRight size={20} className="ml-2" />
@@ -584,9 +579,9 @@ export default function Home() {
       </main>
 
       {/* --- FOOTER --- */}
-      <footer className="bg-[#0f172a] text-slate-300 pt-20 pb-8 font-sans">
+      <footer className="bg-[#0f172a] pb-8 pt-14 font-sans text-slate-300 sm:pt-20">
         <div className="mx-auto max-w-6xl px-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12 mb-16">
+          <div className="mb-12 grid grid-cols-1 gap-9 sm:grid-cols-2 sm:gap-10 lg:mb-16 lg:grid-cols-4 lg:gap-12">
             {/* Brand Column */}
             <div className="space-y-6">
               <div className="flex items-center gap-3">
@@ -666,7 +661,7 @@ export default function Home() {
       {/* --- SCROLL TO TOP --- */}
       <a
         href="#hero"
-        className="fixed bottom-8 right-8 w-14 h-14 bg-white text-[#0db5f7] rounded-full shadow-2xl flex items-center justify-center text-2xl z-40 hover:-translate-y-2 hover:shadow-[#0db5f7]/30 transition-all duration-300 border border-slate-100"
+        className="fixed bottom-4 right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-slate-100 bg-white text-xl text-[#0db5f7] shadow-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-[#0db5f7]/30 sm:bottom-8 sm:right-8 sm:h-14 sm:w-14 sm:text-2xl"
         style={{ display: 'var(--scroll-display, none)', opacity: 'var(--scroll-opacity, 0)' }}
         onClick={(e) => {
           e.preventDefault();

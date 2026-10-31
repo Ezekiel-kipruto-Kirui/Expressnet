@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Network,
   Package,
+  Tags,
   RadioTower,
   Receipt,
   Settings,
@@ -45,12 +46,19 @@ const sections = [
     ],
   },
   {
+    title: 'Plans',
+    icon: Tags,
+    links: [
+      { to: '/packages', label: 'Packages', icon: Package },
+      { to: '/vouchers', label: 'Vouchers', icon: WalletCards },
+    ],
+  },
+  {
     title: 'Management',
     icon: BriefcaseBusiness,
     links: [
       { to: '/tickets', label: 'Tasks', icon: Ticket },
-      { to: '/packages', label: 'Packages', icon: Package },
-      { to: '/vouchers', label: 'Vouchers', icon: WalletCards },
+      { to: '/audit', label: 'Audit trail', icon: ClipboardList },
       { to: '/equipment', label: 'Tools & Equipments', icon: Wrench },
       { to: '/requisitions', label: 'Requisitions', icon: ClipboardList },
       // { to: '/reports/management', label: 'Management Report', icon: FileBarChart },
@@ -115,14 +123,13 @@ export default function Sidebar({ open, onClose }) {
     if (link.to === '/dashboard') return location.pathname === '/dashboard';
     return location.pathname === link.to || location.pathname.startsWith(`${link.to}/`);
   });
-
   const toggleSection = (title) => {
     setCollapsedSections((current) => ({ ...current, [title]: !(current[title] ?? false) }));
   };
 
   const navClass = ({ isActive }) =>
     [
-      'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[12px] font-extralight transition',
+      'tenant-sidebar-nav-button flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium tracking-[0.01em] transition',
       isActive
         ? 'bg-[var(--sidebar-active)] text-white shadow-[inset_3px_0_0_rgba(255,255,255,0.28)]'
         : 'text-white/88 hover:bg-white/10 hover:text-white',
@@ -145,11 +152,11 @@ export default function Sidebar({ open, onClose }) {
       >
         <div className="mb-3 rounded-md border p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]" style={{ background: 'color-mix(in srgb, var(--sidebar-bottom) 28%, transparent)', borderColor: 'color-mix(in srgb, var(--sidebar-border) 32%, transparent)' }}>
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base font-light tracking-wide text-white shadow-sm" style={{ background: 'var(--sidebar-avatar)' }}>
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-base font-medium tracking-wide text-white shadow-sm" style={{ background: 'var(--sidebar-avatar)' }}>
               {tenantInitial(tenant)}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] font-light tracking-[0.01em] text-white">{tenant?.business_name || tenant?.name || 'Expressnet'}</p>
+              <p className="truncate text-sm font-bold tracking-[0.01em] text-white">{tenant?.business_name || tenant?.name || 'Expressnet'}</p>
             </div>
             <ChevronDown size={14} className="text-white/75" />
           </div>
@@ -170,8 +177,8 @@ export default function Sidebar({ open, onClose }) {
                 <div key={`single-${index}`} className={index ? 'border-t border-white/10 pt-2' : ''}>
                   {links.map(({ to, label, icon: Icon, trailing: Trailing }) => (
                     <NavLink key={`${label}-${to}`} to={to} className={navClass} onClick={onClose}>
-                      <Icon size={16} strokeWidth={2} />
-                      <span className="min-w-0 flex-1 truncate">{label}</span>
+                      <Icon size={16} strokeWidth={1.5} />
+                      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
                       {Trailing && <Trailing size={15} />}
                     </NavLink>
                   ))}
@@ -183,11 +190,11 @@ export default function Sidebar({ open, onClose }) {
               <div key={section.title} className="border-t border-white/10 pt-2 first:border-t-0 first:pt-0">
                 <button
                   type="button"
-                  className={`flex h-7 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[12px] font-extralight transition hover:bg-white/10 ${groupActive ? 'text-white' : 'text-white/84'}`}
+                  className={`tenant-sidebar-nav-button flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm font-medium tracking-[0.01em] transition hover:bg-white/10 ${groupActive ? 'text-white' : 'text-white/84'}`}
                   onClick={() => toggleSection(section.title)}
                   aria-expanded={expanded}
                 >
-                  {SectionIcon && <SectionIcon size={15} strokeWidth={2} />}
+                  {SectionIcon && <SectionIcon size={15} strokeWidth={1.5} />}
                   <span className="min-w-0 flex-1 truncate">{section.title}</span>
                   {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
@@ -198,12 +205,12 @@ export default function Sidebar({ open, onClose }) {
                         key={`${section.title}-${label}-${to}`}
                         to={to}
                         className={({ isActive }) => [
-                          'ml-6 flex h-7 items-center gap-2 rounded-md px-2 text-[12px] font-extralight transition',
+                          'tenant-sidebar-nav-button ml-6 flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium tracking-[0.01em] transition',
                           isActive ? 'bg-[var(--sidebar-active)] text-white' : 'text-white/84 hover:bg-white/10 hover:text-white',
                         ].join(' ')}
                         onClick={onClose}
                       >
-                        <Icon size={12} strokeWidth={2} />
+                        <Icon size={12} strokeWidth={1.5} />
                         <span className="min-w-0 flex-1 truncate">{label}</span>
                       </NavLink>
                     ))}

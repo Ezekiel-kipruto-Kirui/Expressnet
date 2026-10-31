@@ -3,9 +3,12 @@ import html
 import hashlib
 import logging
 import os
+import platform
 import re
 import secrets
+import shutil
 import threading
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -23,7 +26,8 @@ from django.core.paginator import Paginator
 from django.core import signing
 from django.db import IntegrityError, close_old_connections, connection
 from django.db.utils import OperationalError
-from django.db.models import Count, Sum
+from django.db.models import Count, Sum, Q
+from django.db.models.functions import Lower, Trim, Substr
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect
 from django.utils import timezone
@@ -34,7 +38,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 
 from billing_api.auth import admin_required, tenant_required
-from billing_api.models import AdminUser, Customer, InternetPackage, Payment, SubscriptionPayment, Tenant, TenantSubscription, Ticket, User
+from billing_api.models import AdminAuditLog, AdminUser, Customer, InternetPackage, Payment, RadiusSession, SubscriptionPayment, Tenant, TenantSubscription, Ticket, User
+from core.models import Tenant as SchemaTenant
 from billing_api.services import (
     admin_token,
     check_password,
@@ -167,29 +172,23 @@ def send_login_verification_email(recipient_email, code):
 <html>
   <body style="margin:0;padding:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:24px 0;">
-      <tr>
-        <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;">
-            <tr>
-              <td style="padding:28px;">
-                <p style="margin:0 0 8px;font-size:14px;font-weight:700;color:#2563eb;">{html.escape(brand)}</p>
-                <h1 style="margin:0 0 16px;font-size:22px;line-height:1.3;color:#0f172a;">Sign in verification code</h1>
-                <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#334155;">Use this code to finish signing in. It expires in 10 minutes.</p>
-                <p style="margin:0 0 22px;padding:14px 18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;text-align:center;font-size:30px;letter-spacing:8px;font-weight:700;color:#1d4ed8;">{html.escape(code)}</p>
-                <p style="margin:0;font-size:13px;line-height:1.5;color:#64748b;">If you did not try to sign in, you can safely ignore this email.</p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
+      <tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;">
+        <tr><td style="padding:28px;">
+          <p style="margin:0 0 8px;font-size:14px;font-weight:700;color:#2563eb;">{html.escape(brand)}</p>
+          <h1 style="margin:0 0 16px;font-size:22px;line-height:1.3;color:#0f172a;">Sign in verification code</h1>
+          <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#334155;">Use this code to finish signing in. It expires in 10 minutes.</p>
+          <p style="margin:0 0 22px;padding:14px 18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;text-align:center;font-size:30px;letter-spacing:8px;font-weight:700;color:#1d4ed8;">{html.escape(code)}</p>
+          <p style="margin:0;font-size:13px;line-height:1.5;color:#64748b;">If you did not try to sign in, you can safely ignore this email.</p>
+        </td></tr>
+      </table></td></tr>
     </table>
   </body>
 </html>
 """
     try:
         message = EmailMultiAlternatives(
-            subject=subject,
-            body=text_body,
+            subject,
+            text_body,
             from_email=from_email,
             to=[recipient_email],
             headers={"Reply-To": from_email} if from_email else None,
@@ -218,6 +217,44 @@ def send_login_verification_email(recipient_email, code):
         return 0
 
 
+def _send_tenant_email_verification(tenant_id, tenant, verification_url):
+    recipient = tenant.get("email")
+    if not recipient or not verification_url:
+        return 0
+    brand = getattr(settings, "EMAIL_BRAND_NAME", "Expressnetbilling")
+    subject = f"Verify your {brand} account"
+    text_body = (
+        f"Hello {tenant.get('owner_name') or tenant.get('business_name') or 'there'},\n\n"
+        f"Confirm the email address for {tenant.get('business_name') or 'your business'} by opening this link:\n\n"
+        f"{verification_url}\n\nThis link expires in 24 hours. After verification, you will be sent to the login page."
+    )
+    html_body = f"""<!doctype html><html><body style="margin:0;padding:32px 16px;background:#0b1120;font-family:Arial,Helvetica,sans-serif;color:#e2e8f0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:540px;background:#111c30;border:1px solid #26364e;border-radius:16px"><tr><td style="padding:36px"><p style="margin:0 0 10px;color:#22d3ee;font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase">{html.escape(brand)}</p><h1 style="margin:0 0 16px;color:#fff;font-size:24px">Verify your email address</h1><p style="margin:0 0 24px;color:#cbd5e1;font-size:15px;line-height:1.6">Confirm this email address to activate sign-in for {html.escape(tenant.get('business_name') or 'your business')}.</p><p style="margin:0 0 28px"><a href="{html.escape(verification_url, quote=True)}" style="display:inline-block;padding:14px 22px;border-radius:10px;background:#06b6d4;color:#082f49;font-weight:bold;text-decoration:none">Verify email</a></p><p style="margin:0;color:#94a3b8;font-size:13px;line-height:1.5">This link expires in 24 hours. After verification, you will be sent to the login page. If you did not create this account, ignore this email.</p></td></tr></table></td></tr></table></body></html>"""
+    try:
+        message = EmailMultiAlternatives(subject, text_body, settings.DEFAULT_FROM_EMAIL, [recipient])
+        message.attach_alternative(html_body, "text/html")
+        return message.send(fail_silently=False)
+    except Exception:
+        logger.exception("Failed to send tenant verification email tenant=%s email=%s", tenant_id, recipient)
+        return 0
+
+
+def tenant_email_is_verified(tenant):
+    """Return the persisted verification state, including older shared-record tenants."""
+    if tenant.extra.get("email_verified") is True:
+        return True
+    try:
+        legacy_tenant = ref(f"tenants/{tenant.pk}").get() or {}
+    except Exception:
+        logger.exception("Could not read email verification state tenant=%s", tenant.pk)
+        return False
+    if legacy_tenant.get("email_verified") is True:
+        tenant.extra["email_verified"] = True
+        tenant.save(update_fields=["extra", "updated_at"])
+        return True
+    # Accounts created before email verification existed must remain usable.
+    if "email_verified" not in tenant.extra and "email_verified" not in legacy_tenant:
+        return True
+    return False
 def _tenant_login_challenge_key(challenge_id):
     return f"tenant_login_2fa:{challenge_id}"
 
@@ -327,9 +364,7 @@ def _tenant_login_payload(tenant, member_id=None):
 
 
 def _password_matches_login(raw_password, stored_password):
-    if check_password(raw_password, stored_password):
-        return True
-    return bool(stored_password) and str(raw_password) == str(stored_password)
+    return check_password(raw_password, stored_password)
 
 
 def _find_staff_login(email, password):
@@ -408,11 +443,10 @@ def notify_tenant_registered(tenant, request=None):
         "Your Expressnetbilling workspace is ready",
         (
             f"Hello {tenant.get('owner_name') or tenant.get('business_name')},\n\n"
-            f"Your {tenant.get('business_name') or 'Expressnetbilling'} workspace has been created.\n\n"
+            f"Your {tenant.get('business_name') or 'Expressnetbilling'} workspace has been created and is awaiting email verification.\n\n"
             f"Subdomain: {tenant.get('subdomain')}\n"
             f"Workspace URL: {workspace_url}\n"
-            f"Sign in: {login_url}\n\n"
-            "Use the email and password you provided during registration to sign in."
+            "Your account is waiting for email verification. Please use the verification email before attempting to sign in."
         ),
         [tenant.get("email")],
     )
@@ -439,11 +473,10 @@ def send_tenant_registration_notifications_async(tenant_id, tenant, login_url):
                 "Your Expressnetbilling workspace is ready",
                 (
                     f"Hello {tenant.get('owner_name') or tenant.get('business_name')},\n\n"
-                    f"Your {tenant.get('business_name') or 'Expressnetbilling'} workspace has been created.\n\n"
+                    f"Your {tenant.get('business_name') or 'Expressnetbilling'} workspace has been created and is awaiting email verification.\n\n"
                     f"Subdomain: {tenant.get('subdomain')}\n"
-                    f"Workspace URL: {workspace_login_url}\n"
-                    f"Sign in: {workspace_login_url}\n\n"
-                    "Use the email and password you provided during registration to sign in."
+                    f"Workspace URL: {workspace_login_url}\n\n"
+                    "Your account is waiting for email verification. Please use the verification email before attempting to sign in."
                 ),
                 [tenant.get("email")],
             )
@@ -819,10 +852,9 @@ def public_base_url(request):
     forwarded_proto = (request.META.get("HTTP_X_FORWARDED_PROTO") or request.scheme or "https").split(",")[0].strip()
     request_url = normalize_public_url(f"{forwarded_proto}://{host}")
 
-    candidates = [
-        os.getenv("PUBLIC_APP_URL"),
-        getattr(settings, "PUBLIC_APP_URL", ""),
-        ]
+    candidates = [getattr(settings, "PUBLIC_APP_URL", ""), os.getenv("PUBLIC_APP_URL")]
+    if settings.DEBUG and ("localhost" in request_url or "127.0.0.1" in request_url):
+        candidates = [request_url]
     if request_url and "localhost" not in request_url and "127.0.0.1" not in request_url:
         candidates.insert(0, request_url)
     if not settings.DEBUG:
@@ -846,10 +878,10 @@ def tenant_theme_payload(tenant):
         "bank_name": tenant.get("bank_name") or "",
         "bank_account_number": tenant.get("bank_account_number") or "",
         "payment_methods": tenant.get("payment_methods") if isinstance(tenant.get("payment_methods"), list) else ["bank"],
-        "daraja_consumer_key": tenant.get("daraja_consumer_key") or "",
-        "daraja_consumer_secret": tenant.get("daraja_consumer_secret") or "",
+        "has_daraja_consumer_key": bool(tenant.get("daraja_consumer_key")),
+        "has_daraja_consumer_secret": bool(tenant.get("daraja_consumer_secret")),
         "daraja_shortcode": tenant.get("daraja_shortcode") or "",
-        "daraja_passkey": tenant.get("daraja_passkey") or "",
+        "has_daraja_passkey": bool(tenant.get("daraja_passkey")),
         "daraja_till_number": tenant.get("daraja_till_number") or "",
         "daraja_shortcode_type": tenant.get("daraja_shortcode_type") or "CustomerBuyGoodsOnline",
         "daraja_environment": tenant.get("daraja_environment") or "production",
@@ -878,6 +910,21 @@ def health(request):
     )
 
 
+def _business_name_exists(name, exclude_tenant_id=None, exclude_email=None):
+    normalized = str(name or "").strip().lower()
+    billing_tenants = Tenant.objects.annotate(normalized_business=Lower(Trim("business_name"))).filter(normalized_business=normalized)
+    if exclude_tenant_id is not None:
+        billing_tenants = billing_tenants.exclude(pk=exclude_tenant_id)
+    if exclude_email:
+        billing_tenants = billing_tenants.exclude(email__iexact=exclude_email)
+    schema_tenants = SchemaTenant.objects.annotate(normalized_business=Lower(Trim("business_name"))).filter(normalized_business=normalized)
+    if exclude_tenant_id is not None:
+        schema_tenants = schema_tenants.exclude(pk=exclude_tenant_id)
+    if exclude_email:
+        schema_tenants = schema_tenants.exclude(email__iexact=exclude_email)
+    return billing_tenants.exists() or schema_tenants.exists()
+
+
 @csrf_exempt
 @api_view(["POST"])
 def auth_register(request):
@@ -886,19 +933,27 @@ def auth_register(request):
     if missing:
         return ok({"message": f"Missing fields: {', '.join(missing)}"}, 400)
     email = data["email"].lower().strip()
+    confirmation = str(data.get("confirm_password") or data.get("password_confirmation") or "")
+    if confirmation and confirmation != str(data.get("password") or ""):
+        return ok({"message": "Passwords do not match."}, 400)
+    business_name = str(data["business_name"]).strip()
+    if not business_name:
+        return ok({"message": "Business name is required"}, 400)
+    if _business_name_exists(business_name, exclude_email=email):
+        return ok({"message": "A business with this name is already registered. Choose a different business name."}, 409)
     existing_tenant = Tenant.objects.filter(email__iexact=email).first()
     if existing_tenant and check_password(data["password"], existing_tenant.password):
         ensure_subscription(existing_tenant, data.get("plan") or "basic")
         return ok(
             {
                 "success": True,
-                "message": "This email is already registered. You can log in with the password you provided.",
+                "message": "This email is already registered. Check your inbox for the email verification link before signing in.",
                 "tenantId": str(existing_tenant.pk),
             }
         )
     if existing_tenant:
         return ok({"message": "Email already registered"}, 400)
-    base_slug = tenant_slug(data["business_name"])
+    base_slug = tenant_slug(business_name)
     slug = base_slug
     suffix = 2
     while Tenant.objects.filter(extra__subdomain=slug).exists():
@@ -909,7 +964,7 @@ def auth_register(request):
     try:
         tenant_ref = ref("tenants").push(
             {
-                "business_name": data["business_name"],
+                "business_name": business_name,
                 "owner_name": data["owner_name"],
                 "email": email,
                 "phone": data["phone"],
@@ -930,10 +985,14 @@ def auth_register(request):
                 "theme_color": data.get("theme_color") or "#fa8200",
                 "dark_mode": False,
                 "status": "active",
+                "email_verified": False,
+                "email_verification_token": "",
                 "created_at": iso_now(),
             }
         )
     except IntegrityError as exc:
+        if "business_name" in str(exc).lower():
+            return ok({"message": "A business with this name is already registered. Choose a different business name."}, 409)
         if "email" in str(exc).lower() or "unique" in str(exc).lower():
             logger.info("Tenant registration duplicate email race for %s", email)
             return ok({"message": "Email already registered"}, 400)
@@ -943,12 +1002,63 @@ def auth_register(request):
         logger.exception("Tenant registration failed for %s", email)
         return ok({"message": "Registration failed. Please try again or contact support."}, 500)
     tenant_data = ref(f"tenants/{tenant_ref.key}").get() or {}
+    tenant_data["email_verified"] = False
+    tenant_data["email_verification_token"] = signing.dumps(
+        {"tenant_id": str(tenant_ref.key), "email": email},
+        salt="tenant-email-verification",
+    )
+    ref(f"tenants/{tenant_ref.key}").update({
+        "email_verified": False,
+        "email_verification_token": tenant_data["email_verification_token"],
+    })
     tenant_instance = Tenant.objects.filter(pk=tenant_ref.key).first()
     if tenant_instance:
         ensure_subscription(tenant_instance, data.get("plan") or "basic")
+    verification_token = tenant_data.get("email_verification_token") or ""
+    verification_url = f"{public_base_url(request).rstrip('/')}/{settings.API_BASE_PATH}/v1/core/auth/verify-email?token={verification_token}" if verification_token else ""
     login_url = workspace_url.rstrip("/")
     send_tenant_registration_notifications_async(tenant_ref.key, tenant_data, login_url)
-    return ok({"success": True, "message": "You have been successfully registered. Check your email for verification and your tenant subdomain.", "tenantId": tenant_ref.key, "subdomain": tenant_data.get("subdomain"), "domain": tenant_data.get("domain"), "workspaceUrl": tenant_data.get("workspace_url")})
+    if not _send_tenant_email_verification(tenant_ref.key, tenant_data, verification_url):
+        ref(f"tenants/{tenant_ref.key}").update({"email_verification_token": None})
+        tenant_instance = Tenant.objects.filter(pk=tenant_ref.key).first()
+        if tenant_instance:
+            tenant_instance.extra["email_verification_token"] = ""
+            tenant_instance.save(update_fields=["extra", "updated_at"])
+        return ok({"message": "Your account was created, but we could not send the verification email. Please contact support to resend it."}, 502)
+    return ok({"success": True, "message": "Your account was created. Check your email and open the verification link to continue to sign in.", "tenantId": tenant_ref.key, "subdomain": tenant_data.get("subdomain"), "domain": tenant_data.get("domain"), "workspaceUrl": tenant_data.get("workspace_url")})
+
+
+@csrf_exempt
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def auth_verify_email(request):
+    token = str(request.query_params.get("token") or "").strip()
+    if not token:
+        return redirect(f"{settings.PUBLIC_APP_URL.rstrip('/')}/login?verification=missing")
+    try:
+        verification = signing.loads(token, salt="tenant-email-verification", max_age=24 * 60 * 60)
+    except (signing.BadSignature, signing.SignatureExpired):
+        return redirect(f"{settings.PUBLIC_APP_URL.rstrip('/')}/login?verification=invalid")
+    tenant = Tenant.objects.filter(pk=verification.get("tenant_id"), email__iexact=verification.get("email", "")).first()
+    if not tenant:
+        return redirect(f"{settings.PUBLIC_APP_URL.rstrip('/')}/login?verification=invalid")
+    workspace_url = _tenant_workspace_url({**tenant.as_dict(), **tenant.extra})
+    local_verification_host = request.get_host().split(":", 1)[0].lower() in {"localhost", "127.0.0.1", "[::1]"}
+    if settings.DEBUG and local_verification_host:
+        login_url = f"{public_base_url(request).rstrip('/')}/login"
+    else:
+        login_url = f"{workspace_url}/login" if workspace_url else f"{public_base_url(request).rstrip('/')}/login"
+    if tenant_email_is_verified(tenant):
+        return redirect(f"{login_url}?email_verified=1")
+    tenant.extra["email_verified"] = True
+    tenant.extra.pop("email_verification_token", None)
+    tenant.save(update_fields=["extra", "updated_at"])
+    try:
+        ref(f"tenants/{tenant.pk}").update({"email_verified": True, "email_verification_token": None})
+    except Exception:
+        logger.exception("Failed to sync tenant email verification to tenant record tenant=%s", tenant.pk)
+    cache.delete(f"tenant_auth:{tenant.pk}")
+    return redirect(f"{login_url}?email_verified=1")
 
 
 @csrf_exempt
@@ -986,6 +1096,10 @@ def auth_login(request):
         return ok({"message": "Email and password are required"}, 400)
     email = str(data["email"]).lower().strip()
     password = str(data["password"]).strip()
+
+    registered_tenant = Tenant.objects.filter(email__iexact=email).first()
+    if registered_tenant and not tenant_email_is_verified(registered_tenant):
+        return ok({"message": "Verify your email address using the link we sent before signing in."}, 403)
 
     def complete_login(tenant, member_id=None):
         try:
@@ -1121,6 +1235,94 @@ def tenant_admin_payload(tenant):
     return payload
 
 
+def tenant_overview_payload(tenant_id):
+    counts = {str(row["service_type"]).lower(): row["total"] for row in Customer.objects.filter(tenant_id=tenant_id).values("service_type").annotate(total=Count("id"))}
+    now = timezone.now()
+    tenant = Tenant.objects.filter(pk=tenant_id).first()
+    tenant_data = tenant.as_dict() if tenant else {}
+    today_prefix = now.date().isoformat()
+    month_prefix = now.strftime("%Y-%m")
+    successful_payments = Payment.objects.filter(tenant_id=tenant_id, status__iexact="success")
+    revenue_today = float(successful_payments.filter(paid_at__startswith=today_prefix).aggregate(total=Sum("amount"))["total"] or 0)
+    revenue_this_month = float(successful_payments.filter(paid_at__startswith=month_prefix).aggregate(total=Sum("amount"))["total"] or 0)
+    system_fee_due, fee_sales_basis, fee_percent = system_subscription_amount(tenant) if tenant else (Decimal("0"), Decimal("0"), system_subscription_fee_percent())
+    subscription = TenantSubscription.objects.filter(tenant_id=tenant_id).first()
+    linked = tenant_data.get("linked_routers") or {}
+    linked_items = list(linked.items()) if isinstance(linked, dict) else list(enumerate(linked)) if isinstance(linked, list) else []
+    routers = []
+    for router_id, router in linked_items:
+        router = router if isinstance(router, dict) else {"name": str(router)}
+        routers.append({
+            "id": str(router_id),
+            "name": str(router.get("name") or router.get("router_name") or router.get("label") or f"Router {router_id}"),
+            "host": str(router.get("host") or router.get("ip") or router.get("address") or ""),
+            "port": router.get("port") or router.get("api_port") or "",
+            "model": str(router.get("model") or router.get("board_name") or ""),
+            "status": str(router.get("status") or router.get("connection_status") or "configured"),
+        })
+    if not routers and tenant_data.get("mikrotik_host"):
+        routers = [{
+            "id": "primary",
+            "name": str(tenant_data.get("mikrotik_detected_board") or "Primary MikroTik"),
+            "host": str(tenant_data.get("mikrotik_host") or ""),
+            "port": tenant_data.get("mikrotik_port") or 8728,
+            "model": str(tenant_data.get("mikrotik_detected_board") or ""),
+            "status": str(tenant_data.get("mikrotik_provisioning_status") or "configured"),
+        }]
+    snapshot = tenant_data.get("mikrotik_router_snapshot") or {}
+    snapshot_sessions = snapshot.get("active_sessions") if isinstance(snapshot, dict) else {}
+    snapshot_session_count = int(snapshot_sessions.get("total") or 0) if isinstance(snapshot_sessions, dict) else 0
+    radius_session_count = RadiusSession.objects.filter(tenant_id=tenant_id, stopped_at__isnull=True).count()
+    last_seen = parse_date(tenant_data.get("mikrotik_last_seen_at"))
+    if last_seen and timezone.is_naive(last_seen):
+        last_seen = timezone.make_aware(last_seen, timezone.get_current_timezone())
+    router_status = "online" if last_seen and now - last_seen <= timedelta(minutes=3) else "offline" if tenant_data.get("mikrotik_host") or linked_items else "not configured"
+    month_start = now.date().replace(day=1)
+    six_month_start = (month_start - timedelta(days=155)).replace(day=1)
+    monthly_rows = Payment.objects.filter(
+        tenant_id=tenant_id,
+        status__iexact="success",
+        paid_at__gte=six_month_start.isoformat(),
+    ).annotate(month=Substr("paid_at", 1, 7)).values("month").annotate(total=Sum("amount"))
+    by_month = {row["month"]: float(row["total"] or 0) for row in monthly_rows}
+    month_keys = []
+    cursor = month_start
+    for _ in range(6):
+        month_keys.append(cursor.strftime("%Y-%m"))
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+    month_keys.reverse()
+    monthly_amounts = [{"month": key, "amount": round(by_month.get(key, 0), 2)} for key in month_keys]
+    return {
+        "pppoeCustomers": counts.get("pppoe", 0),
+        "hotspotUsers": counts.get("hotspot", 0),
+        "totalCustomers": sum(counts.values()),
+        "routerCount": len(routers),
+        "activeSessions": max(radius_session_count, snapshot_session_count),
+        "revenueToday": round(revenue_today, 2),
+        "revenueThisMonth": round(revenue_this_month, 2),
+        "systemFeeDue": round(float(system_fee_due), 2),
+        "systemFeePercent": float(fee_percent),
+        "systemFeeSalesBasis": round(float(fee_sales_basis), 2),
+        "systemFeeCurrency": (subscription.currency if subscription else "KES") or "KES",
+        "systemFeePeriod": month_prefix,
+        "network": {
+            "status": router_status,
+            "host": str(tenant_data.get("mikrotik_host") or ""),
+            "username": str(tenant_data.get("mikrotik_user") or ""),
+            "port": tenant_data.get("mikrotik_port") or 8728,
+            "provisioningStatus": str(tenant_data.get("mikrotik_provisioning_status") or ""),
+            "lastSeenAt": tenant_data.get("mikrotik_last_seen_at") or "",
+            "radiusEnabled": bool(tenant_data.get("radius_enabled")),
+            "routers": routers,
+            "activeSessions": max(radius_session_count, snapshot_session_count),
+            "sessionSource": "router snapshot and RADIUS" if snapshot_session_count and radius_session_count else "router snapshot" if snapshot_session_count else "RADIUS accounting" if radius_session_count else "No active session records",
+        },
+        "averageMonthlyRevenue": round(sum(item["amount"] for item in monthly_amounts) / 6, 2),
+        "revenueByMonth": monthly_amounts,
+        "revenueWindowMonths": 6,
+    }
+
+
 @csrf_exempt
 @api_view(["GET", "POST", "PATCH", "DELETE"])
 @admin_required
@@ -1131,6 +1333,17 @@ def admin_tenants(request, tenant_id=None, child=None):
         return ok(list_children(f"tenants/{tenant_id}/payments"))
     if tenant_id and child == "packages":
         return ok(list_children(f"tenants/{tenant_id}/packages"))
+    if tenant_id and child == "audit" and method(request, "GET"):
+        records = AdminAuditLog.objects.filter(
+            Q(tenant_id=str(tenant_id))
+            | Q(target_type="tenant", target_id=str(tenant_id))
+            | Q(metadata__tenantId=str(tenant_id))
+        ).order_by("-timestamp")[:500]
+        return ok([item.as_dict() for item in records])
+    if tenant_id and child == "overview" and method(request, "GET"):
+        if not Tenant.objects.filter(pk=tenant_id).exists():
+            return ok({"error": "Tenant not found"}, 404)
+        return ok(tenant_overview_payload(tenant_id))
     if method(request, "GET") and not tenant_id:
         tenants = [tenant_admin_payload(item) for item in list_children("tenants")]
         write_audit_log(request.admin["adminId"], request.admin["email"], "LIST_TENANTS", target_type="tenant", request=request, metadata={"count": len(tenants)})
@@ -1148,10 +1361,15 @@ def admin_tenants(request, tenant_id=None, child=None):
             return ok({"error": f"Missing fields: {', '.join(missing)}"}, 400)
         if find_child_by_field("tenants", "email", data["email"]):
             return ok({"error": "Email already registered"}, 409)
-        new_ref = ref("tenants").push({**{field: data.get(field) for field in required if field != "password"}, "email": data["email"].lower().strip(), "password": hash_password(data["password"]), "mikrotik_port": int(data.get("mikrotik_port") or 8728), "status": "active", "created_by": f"admin:{request.admin['adminId']}", "created_at": iso_now()})
+        business_name = str(data["business_name"]).strip()
+        if not business_name:
+            return ok({"error": "Business name is required"}, 400)
+        if _business_name_exists(business_name):
+            return ok({"error": "A business with this name already exists"}, 409)
+        new_ref = ref("tenants").push({**{field: data.get(field) for field in required if field != "password"}, "business_name": business_name, "email": data["email"].lower().strip(), "password": hash_password(data["password"]), "mikrotik_port": int(data.get("mikrotik_port") or 8728), "status": "active", "created_by": f"admin:{request.admin['adminId']}", "created_at": iso_now()})
         tenant_instance = Tenant.objects.get(pk=new_ref.key)
         ensure_subscription(tenant_instance, data.get("plan") or "basic")
-        write_audit_log(request.admin["adminId"], request.admin["email"], "CREATE_TENANT", new_ref.key, "tenant", request, {"business_name": data["business_name"], "email": data["email"].lower().strip()})
+        write_audit_log(request.admin["adminId"], request.admin["email"], "CREATE_TENANT", new_ref.key, "tenant", request, {"business_name": data["business_name"], "email": data["email"].lower().strip()}, tenant_id=new_ref.key)
         return ok({"message": "Tenant created", "tenantId": new_ref.key}, 201)
     if method(request, "PATCH") and tenant_id:
         data = body(request)
@@ -1168,11 +1386,21 @@ def admin_tenants(request, tenant_id=None, child=None):
                 updates[field] = value
         if "email" in updates:
             updates["email"] = str(updates["email"]).lower().strip()
+        if "business_name" in updates:
+            updates["business_name"] = str(updates["business_name"]).strip()
+            current_name = str(existing_tenant.get("business_name") or "").strip()
+            if updates["business_name"].lower() != current_name.lower() and _business_name_exists(updates["business_name"], exclude_tenant_id=tenant_id):
+                return ok({"error": "A business with this name already exists"}, 409)
         if "mikrotik_port" in updates:
             updates["mikrotik_port"] = int(updates["mikrotik_port"] or 8728)
         if not updates:
             return ok({"error": "No allowed fields provided"}, 400)
-        ref(f"tenants/{tenant_id}").update(updates)
+        try:
+            ref(f"tenants/{tenant_id}").update(updates)
+        except IntegrityError:
+            if "business_name" in updates:
+                return ok({"error": "A business with this name already exists"}, 409)
+            raise
         if updates.get("status") == "active" and existing_tenant.get("status") != "active":
             notify_tenant_activated({**existing_tenant, **updates, "id": tenant_id})
         if data.get("plan"):
@@ -1181,12 +1409,17 @@ def admin_tenants(request, tenant_id=None, child=None):
                 subscription = ensure_subscription(tenant_instance, data.get("plan"))
                 subscription.plan = data.get("plan")
                 subscription.save(update_fields=["plan", "updated_at"])
-        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_TENANT", tenant_id, "tenant", request, {"updated_fields": list(updates)})
+        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_TENANT", tenant_id, "tenant", request, {"updated_fields": list(updates)}, tenant_id=tenant_id)
         return ok({"message": "Tenant updated"})
     if method(request, "DELETE") and tenant_id:
-        ref(f"tenants/{tenant_id}").update({"status": "suspended", "suspended_by": request.admin["adminId"], "suspended_at": iso_now()})
-        write_audit_log(request.admin["adminId"], request.admin["email"], "SUSPEND_TENANT", tenant_id, "tenant", request)
-        return ok({"message": "Tenant suspended"})
+        tenant = Tenant.objects.filter(pk=tenant_id).first()
+        if not tenant:
+            return ok({"error": "Tenant not found"}, 404)
+        business_name = tenant.business_name
+        write_audit_log(request.admin["adminId"], request.admin["email"], "DELETE_TENANT", tenant_id, "tenant", request, {"business_name": business_name}, tenant_id=tenant_id)
+        tenant.delete()
+        cache.delete(f"tenant_auth:{tenant_id}")
+        return ok({"message": "Tenant deleted"})
     return ok({"message": " Method not allowed "}, 405)
 
 
@@ -1230,6 +1463,103 @@ def admin_system_stats(request):
 @csrf_exempt
 @api_view(["GET"])
 @admin_required
+def admin_system_metrics(request):
+    """Return live host/container and backing-service metrics for admin monitoring."""
+    from django.conf import settings as django_settings
+
+    sampled_at = timezone.now()
+    try:
+        import psutil
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_count = psutil.cpu_count() or 1
+        memory = psutil.virtual_memory()
+        memory_used = int(memory.used)
+        memory_total = int(memory.total)
+        process = psutil.Process(os.getpid())
+        process_rss = int(process.memory_info().rss)
+        system_uptime = max(0, int(time.time() - psutil.boot_time()))
+        process_uptime = max(0, int(time.time() - process.create_time()))
+    except ImportError:
+        cpu_percent = None
+        cpu_count = os.cpu_count() or 1
+        memory_used = memory_total = process_rss = system_uptime = process_uptime = None
+    load_average = None
+    try:
+        load_average = list(os.getloadavg())
+    except (AttributeError, OSError):
+        pass
+
+    # Prefer the container's memory cgroup limit where available (e.g. Railway/Docker).
+    for current_path, limit_path in (
+        ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.max"),
+        ("/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ):
+        try:
+            current_value = int(Path(current_path).read_text().strip())
+            limit_text = Path(limit_path).read_text().strip()
+            limit_value = int(limit_text)
+            if memory_total and limit_value > 0 and limit_value < memory_total * 10:
+                memory_used, memory_total = current_value, limit_value
+                break
+        except (OSError, ValueError):
+            continue
+
+    disk = shutil.disk_usage(os.path.abspath(os.sep))
+    database = {"status": "unknown", "latencyMs": None, "engine": connection.vendor, "connections": None, "maxConnections": None, "sizeBytes": None}
+    start = time.perf_counter()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            if connection.vendor == "postgresql":
+                cursor.execute("SELECT pg_database_size(current_database()), (SELECT count(*) FROM pg_stat_activity), (SELECT setting::int FROM pg_settings WHERE name = 'max_connections')")
+                row = cursor.fetchone()
+                if row:
+                    database["sizeBytes"], database["connections"], database["maxConnections"] = [int(value) if value is not None else None for value in row]
+            elif connection.vendor == "sqlite" and django_settings.DATABASES["default"].get("NAME"):
+                try:
+                    database["sizeBytes"] = os.path.getsize(django_settings.DATABASES["default"]["NAME"])
+                except OSError:
+                    pass
+        database["status"] = "ok"
+    except Exception as exc:
+        database["status"] = "error"
+        database["error"] = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+    database["latencyMs"] = round((time.perf_counter() - start) * 1000, 2)
+
+    redis_metrics = {"status": "unknown", "latencyMs": None, "usedMemoryBytes": None, "connectedClients": None}
+    try:
+        import redis
+        start = time.perf_counter()
+        client = redis.Redis.from_url(django_settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
+        client.ping()
+        redis_metrics["latencyMs"] = round((time.perf_counter() - start) * 1000, 2)
+        redis_metrics["status"] = "ok"
+        try:
+            info = client.info("memory", "clients")
+            redis_metrics["usedMemoryBytes"] = int(info.get("used_memory") or 0) or None
+            redis_metrics["connectedClients"] = int(info.get("connected_clients") or 0)
+        except Exception:
+            pass
+    except Exception as exc:
+        redis_metrics["status"] = "error"
+        redis_metrics["error"] = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+
+    memory_percent = round(memory_used / memory_total * 100, 1) if memory_total else None
+    return ok({
+        "sampledAt": sampled_at.isoformat(),
+        "cpu": {"usagePercent": round(cpu_percent, 1) if cpu_percent is not None else None, "cores": cpu_count, "loadAverage": load_average},
+        "memory": {"usedBytes": memory_used, "totalBytes": memory_total, "usagePercent": memory_percent, "processRssBytes": process_rss},
+        "disk": {"usedBytes": int(disk.used), "totalBytes": int(disk.total), "freeBytes": int(disk.free), "usagePercent": round(disk.used / disk.total * 100, 1) if disk.total else None},
+        "database": database,
+        "redis": redis_metrics,
+        "runtime": {"uptimeSeconds": system_uptime, "processUptimeSeconds": process_uptime, "python": platform.python_version(), "platform": platform.system()},
+    })
+
+
+@csrf_exempt
+@api_view(["GET"])
+@admin_required
 def admin_revenue_chart(request):
     try:
         days = min(90, max(1, int(request.GET.get("days", 30))))
@@ -1263,7 +1593,7 @@ def admin_subscriptions(request, subscription_id=None):
                     value = parse_date(value)
                 setattr(subscription, field, value)
         subscription.save()
-        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_SUBSCRIPTION", str(subscription.pk), "subscription", request)
+        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_SUBSCRIPTION", str(subscription.pk), "subscription", request, tenant_id=subscription.tenant_id)
         return ok({"message": "Subscription updated", "subscription": subscription_payload(subscription)})
     qs = TenantSubscription.objects.select_related("tenant").order_by("expires_at")
     status = request.GET.get("status", "all")
@@ -1294,7 +1624,7 @@ def admin_subscription_payments(request, subscription_id):
     if method(request, "GET"):
         return ok([payment.as_dict() for payment in subscription.payments.order_by("-paid_at")])
     payment = record_subscription_payment(subscription, body(request), request.admin.get("email"))
-    write_audit_log(request.admin["adminId"], request.admin["email"], "RECORD_SUBSCRIPTION_PAYMENT", str(subscription.pk), "subscription", request, {"payment_id": payment.pk})
+    write_audit_log(request.admin["adminId"], request.admin["email"], "RECORD_SUBSCRIPTION_PAYMENT", str(subscription.pk), "subscription", request, {"payment_id": payment.pk}, tenant_id=subscription.tenant_id)
     return ok({"message": "Payment recorded", "payment": payment.as_dict(), "subscription": subscription_payload(subscription)})
 
 
@@ -1317,10 +1647,10 @@ def admin_tenant_subscription(request, tenant_id):
                     value = parse_date(value)
                 setattr(subscription, field, value)
         subscription.save()
-        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_TENANT_SUBSCRIPTION", tenant_id, "tenant", request)
+        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_TENANT_SUBSCRIPTION", tenant_id, "tenant", request, tenant_id=tenant_id)
         return ok({"message": "Subscription updated", "subscription": subscription_payload(subscription, include_payments=True)})
     payment = record_subscription_payment(subscription, body(request), request.admin.get("email"))
-    write_audit_log(request.admin["adminId"], request.admin["email"], "RECORD_TENANT_SUBSCRIPTION_PAYMENT", tenant_id, "tenant", request, {"payment_id": payment.pk})
+    write_audit_log(request.admin["adminId"], request.admin["email"], "RECORD_TENANT_SUBSCRIPTION_PAYMENT", tenant_id, "tenant", request, {"payment_id": payment.pk}, tenant_id=tenant_id)
     return ok({"message": "Payment recorded", "payment": payment.as_dict(), "subscription": subscription_payload(subscription, include_payments=True)})
 
 
@@ -1328,7 +1658,7 @@ def admin_tenant_subscription(request, tenant_id):
 @api_view(["POST"])
 @admin_required
 def admin_subscription_remind(request, tenant_id):
-    write_audit_log(request.admin["adminId"], request.admin["email"], "SEND_SUBSCRIPTION_REMINDER", tenant_id, "tenant", request)
+    write_audit_log(request.admin["adminId"], request.admin["email"], "SEND_SUBSCRIPTION_REMINDER", tenant_id, "tenant", request, tenant_id=tenant_id)
     return ok({"message": "Reminder queued"})
 
 
@@ -1382,9 +1712,26 @@ def admin_legacy_stats_unreachable(request):
 @api_view(["GET"])
 @admin_required
 def admin_audit_logs(request):
-    logs = sorted(list_children("admin_audit_logs"), key=lambda item: str(item.get("timestamp")), reverse=True)[:100]
-    write_audit_log(request.admin["adminId"], request.admin["email"], "VIEW_AUDIT_LOGS", target_type="admin", request=request, metadata={"count": len(logs)})
-    return ok(logs)
+    records = AdminAuditLog.objects.all()
+    now = timezone.now()
+    summary = records.aggregate(
+        total=Count("id"),
+        today=Count("id", filter=Q(timestamp__date=now.date())),
+        recent=Count("id", filter=Q(timestamp__gte=now - timedelta(days=7))),
+        updates=Count("id", filter=Q(action__icontains="UPDATE") | Q(action__icontains="PATCH")),
+        deletions=Count("id", filter=Q(action__icontains="DELETE")),
+    )
+    page_size = 15
+    try:
+        page_number = max(1, int(request.GET.get("page", 1)))
+    except (TypeError, ValueError):
+        page_number = 1
+    offset = (page_number - 1) * page_size
+    ordered_records = records.order_by("-timestamp", "-id")
+    rows = list(ordered_records[offset:offset + page_size + 1])
+    has_more = len(rows) > page_size
+    logs = [item.as_dict() for item in rows[:page_size]]
+    return ok({"results": logs, "summary": summary, "pageSize": page_size, "page": page_number, "hasMore": has_more})
 
 
 @csrf_exempt
@@ -1479,13 +1826,18 @@ def admin_communications(request):
 def admin_integrations(request):
     settings_data = _platform_settings()
     if method(request, "GET"):
+        apiwap_configured = bool(
+            settings_data.get("apiwap_api_key")
+            or os.getenv("APIWAP_TOKEN")
+            or os.getenv("APIWAP_API_KEY")
+        )
+        slek_configured = bool(os.getenv("SLEK_KEY") and os.getenv("SLEK_SECRET"))
         return ok({
-            "notification_provider": settings_data.get("notification_provider") or "slek",
+            "notification_provider": settings_data.get("notification_provider") or os.getenv("WHATSAPP_PROVIDER") or "slek",
             "collection_provider": settings_data.get("collection_provider") or "daraja",
             "whatsapp_enabled": settings_data.get("whatsapp_enabled") is not False,
-            "apiwap_base_url": settings_data.get("apiwap_base_url") or "https://api.apiwap.com/api/v1",
-            "has_apiwap_api_key": bool(settings_data.get("apiwap_api_key")),
-            "apiwap_status": "connected" if settings_data.get("apiwap_api_key") else "not_configured",
+            "apiwap_configured": apiwap_configured,
+            "slek_configured": slek_configured,
             "has_paystack_secret_key": _paystack_key_configured(),
             "paystack_currency": settings_data.get("paystack_currency") or os.getenv("PAYSTACK_CURRENCY") or "KES",
         })
@@ -1509,15 +1861,17 @@ def admin_integrations(request):
         return ok({"success": False, "message": result.get("error") or result.get("skipped") or "Integration test failed", "result": result}, 400)
 
     updates = {
-        "notification_provider": str(data.get("notification_provider") or data.get("provider") or settings_data.get("notification_provider") or "slek").strip(),
+        "notification_provider": str(data.get("notification_provider") or data.get("provider") or settings_data.get("notification_provider") or os.getenv("WHATSAPP_PROVIDER") or "slek").strip().lower(),
         "collection_provider": str(data.get("collection_provider") or settings_data.get("collection_provider") or "daraja").strip().lower(),
-        "whatsapp_enabled": data.get("whatsapp_enabled") is not False,
+        "whatsapp_enabled": data.get("whatsapp_enabled", settings_data.get("whatsapp_enabled", True)) is not False,
         "apiwap_base_url": str(data.get("apiwap_base_url") or settings_data.get("apiwap_base_url") or "https://api.apiwap.com/api/v1").strip(),
         "integrations_updated_at": iso_now(),
         "updated_by": request.admin["adminId"],
     }
     if updates["collection_provider"] not in {"daraja", "paystack"}:
         return ok({"message": "Collection provider must be Daraja or Paystack"}, 400)
+    if updates["notification_provider"] not in {"apiwap", "slek"}:
+        return ok({"message": "Notification provider must be ApiWap or Slek"}, 400)
     apiwap_api_key = str(data.get("apiwap_api_key") or "").strip()
     if apiwap_api_key and apiwap_api_key not in {MASKED, "********", "••••••••"}:
         updates["apiwap_api_key"] = apiwap_api_key
@@ -1534,8 +1888,8 @@ def admin_integrations(request):
         "message": "Integration settings saved",
         "notification_provider": saved.get("notification_provider") or "slek",
         "whatsapp_enabled": saved.get("whatsapp_enabled") is not False,
-        "apiwap_base_url": saved.get("apiwap_base_url") or "https://api.apiwap.com/api/v1",
-        "has_apiwap_api_key": bool(saved.get("apiwap_api_key")),
+        "apiwap_configured": bool(saved.get("apiwap_api_key") or os.getenv("APIWAP_TOKEN") or os.getenv("APIWAP_API_KEY")),
+        "slek_configured": bool(os.getenv("SLEK_KEY") and os.getenv("SLEK_SECRET")),
         "collection_provider": saved.get("collection_provider") or "daraja",
         "has_paystack_secret_key": _paystack_key_configured(),
         "paystack_currency": saved.get("paystack_currency") or os.getenv("PAYSTACK_CURRENCY") or "KES",
@@ -1561,13 +1915,15 @@ def admin_users(request, tenant_id=None, customer_id=None, action=None):
         allowed = ["name", "phone", "username", "package", "status", "expiry_date", "auto_reconnect"]
         updates = {field: data[field] for field in allowed if field in data}
         ref(f"tenants/{tenant_id}/customers/{customer_id}").update(updates)
-        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_USER", customer_id, "customer", request, {"tenantId": tenant_id, "updated_fields": list(updates)})
+        write_audit_log(request.admin["adminId"], request.admin["email"], "UPDATE_USER", customer_id, "customer", request, {"tenantId": tenant_id, "updated_fields": list(updates)}, tenant_id=tenant_id)
         return ok({"message": "User updated"})
     if action == "reconnect":
         set_customer_enabled(tenant, customer.get("username"), customer.get("service_type", "hotspot"), True)
+        write_audit_log(request.admin["adminId"], request.admin["email"], "RECONNECT_USER", customer_id, "customer", request, {"tenantId": tenant_id}, tenant_id=tenant_id)
         return ok({"message": "User reconnected"})
     if action == "disable":
         set_customer_enabled(tenant, customer.get("username"), customer.get("service_type", "hotspot"), False)
         ref(f"tenants/{tenant_id}/customers/{customer_id}").update({"status": "inactive"})
+        write_audit_log(request.admin["adminId"], request.admin["email"], "DISABLE_USER", customer_id, "customer", request, {"tenantId": tenant_id}, tenant_id=tenant_id)
         return ok({"message": "User disabled"})
     return ok({"message": "Method not allowed"}, 405)

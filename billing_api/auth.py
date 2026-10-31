@@ -7,7 +7,7 @@ from django.core.cache import cache
 from rest_framework.response import Response
 from django.utils import timezone
 
-from .models import Tenant, TenantSubscription
+from .models import AdminAuditLog, Tenant, TenantSubscription
 from .services import decode_admin_token, decode_tenant_token, ref
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,27 @@ def tenant_required(view):
         except Exception:
             logger.exception("Tenant authentication failed after token decode tenant=%s", tenant_id)
             return Response({"message": "Could not verify your session. Please try again."}, status=503)
-        return view(request, *args, **kwargs)
+        response = view(request, *args, **kwargs)
+        if request.method.upper() in {"POST", "PATCH", "PUT", "DELETE"} and getattr(response, "status_code", 500) < 400:
+            try:
+                member = getattr(request, "tenant_member", None) or {}
+                actor = request.tenant.get("email") if request.tenant.get("is_admin") else (member.get("email") or member.get("name") or "Tenant member")
+                path = _normalized_api_path(request)
+                AdminAuditLog.objects.create(
+                    admin_id=str(member.get("id") or tenant_id),
+                    admin_email=actor,
+                    actor_type="tenant",
+                    tenant_id=tenant_id,
+                    action=f"TENANT_{request.method.upper()}_{path.replace('/', '.').upper()[:88]}",
+                    target_id=tenant_id,
+                    target_type="tenant",
+                    ip=request.META.get("REMOTE_ADDR"),
+                    user_agent=request.META.get("HTTP_USER_AGENT"),
+                    metadata={"path": path, "method": request.method.upper(), "status": response.status_code},
+                )
+            except Exception:
+                logger.exception("Could not write tenant audit event tenant=%s", tenant_id)
+        return response
 
     return wrapped
 

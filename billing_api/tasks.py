@@ -1,8 +1,9 @@
 from celery import shared_task
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from .models import TenantSubscription
+from .models import Customer, Tenant, TenantSubscription
 from .services import iso_now, list_children, normalize_phone, ref, send_sms_message, send_whatsapp_message, set_customer_enabled, upsert_customer_access, write_audit_log
 
 """
@@ -70,6 +71,196 @@ def expire_customer_access():
             )
             count += 1
     return count
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def generate_expired_customer_invoices(self, batch_size=200):
+    """Create overdue invoices in bounded batches outside customer read requests."""
+    from management.api.v1.views import create_customer_invoice
+
+    cutoff = timezone.now().isoformat()
+    processed = 0
+    for tenant_record in Tenant.objects.only("id", "extra").iterator(chunk_size=100):
+        tenant_id = str(tenant_record.pk)
+        tenant = {"id": tenant_id, **(tenant_record.extra or {})}
+        customers = Customer.objects.filter(
+            tenant_id=tenant_id, service_type__in=["pppoe", "static"], expiry_date__lte=cutoff,
+        ).exclude(expiry_date__isnull=True).exclude(expiry_date="").order_by("expiry_date", "id")
+        for customer_record in customers.iterator(chunk_size=min(batch_size, 200)):
+            if processed >= batch_size:
+                return processed
+            with transaction.atomic():
+                Tenant.objects.select_for_update().get(pk=tenant_id)
+                locked_customer = Customer.objects.select_for_update().filter(tenant_id=tenant_id, pk=customer_record.pk).first()
+                if not locked_customer:
+                    continue
+                customer = locked_customer.as_dict()
+                expiry = parse_datetime(str(customer.get("expiry_date") or ""))
+                if not expiry:
+                    continue
+                marker = f"expiry_invoice_{expiry.date().isoformat()}"
+                if customer.get(marker):
+                    continue
+                amount = customer.get("amount_payable")
+                if amount in {None, ""}:
+                    package = next((item for item in list_children(f"tenants/{tenant_id}/packages")
+                                    if str(item.get("name") or "").strip().lower() == str(customer.get("package") or "").strip().lower()), {})
+                    amount = package.get("amount_payable") or package.get("price") or 0
+                invoice = create_customer_invoice(tenant, customer, amount, reason="subscription_expired", due_at=expiry.isoformat())
+                if invoice:
+                    ref(f"tenants/{tenant_id}/customers/{customer['id']}").update({marker: invoice["id"], "last_expiry_invoice_at": iso_now()})
+                    processed += 1
+    return processed
+
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def provision_customer_access(self, tenant_id, customer_id):
+    """Apply a newly created customer to MikroTik outside the API request."""
+    from network.services.provisioning import (
+        create_hotspot_profile, create_ppp_profile, has_mikrotik_credentials,
+        mikrotik_managed_bridge_name, upsert_customer_access,
+    )
+    from network.api.v1.views import (
+        _customer_secret_script, _queue_router_command_for_tenant, _router_is_agent_linked,
+    )
+
+    tenant_record = Tenant.objects.filter(pk=tenant_id).first()
+    customer_record = Customer.objects.filter(tenant_id=tenant_id, pk=customer_id).first()
+    if not tenant_record or not customer_record:
+        return {"status": "missing_record"}
+    tenant = {"id": str(tenant_record.pk), **tenant_record.as_dict()}
+    customer = customer_record.as_dict()
+    service_type = str(customer.get("service_type") or "hotspot").lower()
+    package = next((item for item in list_children(f"tenants/{tenant_id}/packages")
+                    if str(item.get("name") or "").strip().lower() == str(customer.get("package") or "").strip().lower()), {})
+    payload = {**customer, "package_name": customer.get("package"), "speed": package.get("speed"), "service_type": service_type}
+    try:
+        if has_mikrotik_credentials(tenant):
+            if service_type == "pppoe":
+                create_ppp_profile(tenant, package.get("name"), package.get("speed"))
+            elif service_type == "hotspot":
+                create_hotspot_profile(tenant, package.get("name"), package.get("speed"))
+            upsert_customer_access(tenant, payload, disabled=customer.get("status") != "active")
+        elif _router_is_agent_linked(tenant):
+            payload.update({"package": customer.get("package"), "mikrotik_bridge_name": mikrotik_managed_bridge_name(tenant)})
+            _queue_router_command_for_tenant(tenant_id, {
+                "type": "sync_secrets", "router_id": customer.get("mikrotik_router_id"),
+                "customer_ids": [customer_id], "script": _customer_secret_script(payload),
+            }, tenant)
+            ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+                "provisioning_status": "queued", "provisioning_message": "Access queued for MikroTik agent sync",
+            })
+            return {"status": "queued"}
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+            "provisioning_status": "provisioned", "provisioning_message": f"{service_type.upper()} access created on MikroTik",
+        })
+        return {"status": "provisioned"}
+    except Exception as exc:
+        logger.exception("Customer provisioning failed tenant=%s customer=%s", tenant_id, customer_id)
+        if isinstance(exc, (TimeoutError, OSError)) and _router_is_agent_linked(tenant):
+            payload.update({"package": customer.get("package"), "mikrotik_bridge_name": mikrotik_managed_bridge_name(tenant)})
+            _queue_router_command_for_tenant(tenant_id, {
+                "type": "sync_secrets", "router_id": customer.get("mikrotik_router_id"),
+                "customer_ids": [customer_id], "script": _customer_secret_script(payload),
+            }, tenant)
+            ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+                "provisioning_status": "queued", "provisioning_message": "Router is unreachable; access was queued for agent sync",
+            })
+            return {"status": "queued"}
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+            "provisioning_status": "failed", "provisioning_message": str(exc)[:500],
+        })
+        raise
+
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+def sync_customer_access_after_update(self, tenant_id, customer_id, send_credentials=False):
+    """Sync changed customer credentials/status to the router and notify asynchronously."""
+    from management.api.v1.views import (
+        _customer_credentials_sms, _customer_secret_script, package_data_limit_bytes,
+        package_duration_delta, package_is_bundle,
+    )
+    from network.services.provisioning import has_mikrotik_credentials, mikrotik_managed_bridge_name, set_customer_enabled, upsert_customer_access
+    from network.api.v1.views import _queue_router_command_for_tenant, _router_is_agent_linked
+
+    tenant_record = Tenant.objects.filter(pk=tenant_id).first()
+    customer_record = Customer.objects.filter(tenant_id=tenant_id, pk=customer_id).first()
+    if not tenant_record or not customer_record:
+        return {"status": "missing_record"}
+    tenant = {"id": str(tenant_record.pk), **tenant_record.as_dict()}
+    customer = customer_record.as_dict()
+    service_type = str(customer.get("service_type") or "hotspot").lower()
+    package = next((item for item in list_children(f"tenants/{tenant_id}/packages")
+                    if str(item.get("name") or "").strip().lower() == str(customer.get("package") or "").strip().lower()), {})
+    payload = {
+        **customer, "package_name": customer.get("package"), "speed": package.get("speed"),
+        "duration_seconds": None if package_is_bundle(package) else int(package_duration_delta(package).total_seconds()) if package and service_type == "hotspot" else None,
+        "limit_bytes_total": package_data_limit_bytes(package),
+    }
+    try:
+        if has_mikrotik_credentials(tenant):
+            upsert_customer_access(tenant, payload, disabled=customer.get("status") != "active")
+            if service_type != "static":
+                set_customer_enabled(tenant, customer.get("username"), service_type, customer.get("status") == "active")
+        elif _router_is_agent_linked(tenant):
+            payload["mikrotik_bridge_name"] = mikrotik_managed_bridge_name(tenant)
+            _queue_router_command_for_tenant(tenant_id, {
+                "type": "sync_secrets", "customer_ids": [customer_id], "script": _customer_secret_script(payload),
+            }, tenant)
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({"router_sync_status": "synced"})
+        if send_credentials:
+            send_sms_message(customer.get("phone"), _customer_credentials_sms(customer, tenant), tenant)
+        return {"status": "synced"}
+    except Exception as exc:
+        logger.exception("Customer update sync failed tenant=%s customer=%s", tenant_id, customer_id)
+        if isinstance(exc, (TimeoutError, OSError)) and _router_is_agent_linked(tenant):
+            payload["mikrotik_bridge_name"] = mikrotik_managed_bridge_name(tenant)
+            _queue_router_command_for_tenant(tenant_id, {
+                "type": "sync_secrets", "customer_ids": [customer_id], "script": _customer_secret_script(payload),
+            }, tenant)
+            ref(f"tenants/{tenant_id}/customers/{customer_id}").update({"router_sync_status": "queued"})
+            if send_credentials:
+                send_sms_message(customer.get("phone"), _customer_credentials_sms(customer, tenant), tenant)
+            return {"status": "queued"}
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+            "router_sync_status": "failed", "router_sync_error": str(exc)[:500],
+        })
+        raise
+
+
+@shared_task(bind=True, max_retries=4, default_retry_delay=30)
+def notify_customer_created(self, tenant_id, customer_id):
+    """Send customer creation WhatsApp notifications asynchronously."""
+    from management.api.v1.views import notify_customer_created as send_created_notification
+
+    tenant_record = Tenant.objects.filter(pk=tenant_id).first()
+    customer_record = Customer.objects.filter(tenant_id=tenant_id, pk=customer_id).first()
+    if not tenant_record or not customer_record:
+        return {"status": "missing_record"}
+    tenant = {"id": str(tenant_record.pk), **tenant_record.as_dict()}
+    customer = customer_record.as_dict()
+    try:
+        result = send_created_notification(tenant, customer)
+        status = "sent" if result.get("customer_whatsapp", {}).get("sent") else "skipped"
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+            "customer_created_notification_status": status,
+            "customer_created_notification_result": result,
+            "customer_created_notification_at": iso_now(),
+        })
+        return result
+    except Exception as exc:
+        logger.exception("Customer creation notification failed tenant=%s customer=%s", tenant_id, customer_id)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        ref(f"tenants/{tenant_id}/customers/{customer_id}").update({
+            "customer_created_notification_status": "failed",
+            "customer_created_notification_error": str(exc)[:500],
+        })
+        raise
 
 
 @shared_task

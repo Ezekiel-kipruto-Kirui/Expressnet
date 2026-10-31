@@ -11,9 +11,10 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminIntegrations from './pages/admin/AdminIntegrations';
 import AdminLogin from './pages/admin/AdminLogin';
 import AdminSystem from './pages/admin/AdminSystem';
+import AdminSettings from './pages/admin/AdminSettings';
 import AdminTenantDetail from './pages/admin/AdminTenantDetail';
 import AdminTenants from './pages/admin/AdminTenants';
-import AdminUsers from './pages/admin/AdminUsers';
+import TenantAuditLog from './pages/TenantAuditLog';
 import BusinessSettings from './pages/BusinessSettings';
 import BillingPayment from './pages/BillingPayment';
 import Customers from './pages/Customers';
@@ -74,6 +75,7 @@ function DashboardLayout() {
         <main className="mx-auto w-full max-w-[1200px] px-4 py-4 sm:px-8 sm:py-5">
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/audit" element={<TenantAuditLog />} />
             <Route path="/billing/payment" element={<BillingPayment />} />
             <Route path="/customers" element={<Customers title="Users" />} />
             <Route path="/pppoe-customers" element={<Customers initialFilter="pppoe" serviceLocked="pppoe" title="PPPoE Customers" />} />
@@ -142,11 +144,11 @@ export default function App() {
           <Route path="dashboard" element={<AdminDashboard />} />
           <Route path="tenants" element={<AdminTenants />} />
           <Route path="tenants/:id" element={<AdminTenantDetail />} />
-          <Route path="users" element={<AdminUsers />} />
           <Route path="communications" element={<AdminCommunications />} />
           <Route path="integrations" element={<AdminIntegrations />} />
           <Route path="system" element={<AdminSystem />} />
           <Route path="audit" element={<AdminAuditLog />} />
+          <Route path="settings" element={<AdminSettings />} />
         </Route>
       </Route>
       {ADMIN_PATH !== '/admin' && (

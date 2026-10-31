@@ -1,154 +1,169 @@
 import {
-  Bell,
-  Building2,
-  ChevronDown,
-  Home,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  MessageSquare,
-  PlugZap,
-  Search,
-  Shield,
-  UserCircle,
-  Users,
-  Wifi,
-  X,
+  Activity, ArrowRight, Building2, Command, FileClock, LayoutDashboard, LogOut, Settings2,
+  Menu, MessageSquareText, PlugZap, Search,
+  Wifi, X,
 } from 'lucide-react';
-import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../../context/AdminAuthContext';
 import { adminLoginUrl, adminPath } from '../../config/adminPaths';
 
-const links = [
-  { to: adminPath('dashboard'), label: 'Dashboard', icon: Home },
-  { to: adminPath('tenants'), label: 'Tenants', icon: Users },
-  { to: adminPath('users'), label: 'Customers', icon: Building2 },
-  { to: adminPath('communications'), label: 'Communications', icon: MessageSquare },
-  { to: adminPath('integrations'), label: 'Integrations', icon: PlugZap },
-  { to: adminPath('system'), label: 'Reports', icon: LayoutDashboard },
-  { to: adminPath('audit'), label: 'Audit Logs', icon: Shield },
-  { to: adminPath('users'), label: 'Users & Roles', icon: UserCircle },
+const sections = [
+  { label: 'Overview', links: [{ to: adminPath('dashboard'), label: 'Dashboard', icon: LayoutDashboard }] },
+  { label: 'Accounts', links: [
+    { to: adminPath('tenants'), label: 'Tenants', icon: Building2 },
+  ] },
+  { label: 'Operations', links: [
+    { to: adminPath('communications'), label: 'Communications', icon: MessageSquareText },
+    { to: adminPath('integrations'), label: 'Integrations', icon: PlugZap },
+  ] },
+  { label: 'Platform', links: [
+    { to: adminPath('system'), label: 'System health', icon: Activity },
+    { to: adminPath('audit'), label: 'Audit log', icon: FileClock },
+  ] },
+  { label: 'Preferences', links: [{ to: adminPath('settings'), label: 'Settings', icon: Settings2 }] },
 ];
+const allLinks = sections.flatMap((section) => section.links);
+const ADMIN_PREFERENCES_KEY = 'expressnet.admin.preferences';
+const accentColors = { blue: '#2563eb', violet: '#7c3aed', teal: '#0f9f91', rose: '#e44770', orange: '#f97316' };
+
+function pageTitle(pathname) {
+  if (pathname.includes('/tenants/') && pathname !== adminPath('tenants')) return 'Tenant workspace';
+  return allLinks.find((link) => pathname === link.to || pathname.startsWith(`${link.to}/`))?.label || 'Admin console';
+}
 
 export default function AdminLayout() {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [preferences, setPreferences] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(ADMIN_PREFERENCES_KEY) || '{}'); } catch { return {}; }
+  });
   const { admin, logoutAdmin } = useAdminAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const title = pageTitle(location.pathname);
+  const matches = useMemo(() => {
+    const text = search.trim().toLowerCase();
+    return (text ? allLinks.filter((link) => link.label.toLowerCase().includes(text)) : allLinks).slice(0, 6);
+  }, [search]);
+
+  useEffect(() => {
+    const onShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+        window.setTimeout(() => document.getElementById('admin-page-search')?.focus(), 0);
+      }
+      if (event.key === 'Escape') setSearchOpen(false);
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, []);
+
+  useEffect(() => {
+    const handlePreferences = () => {
+      try { setPreferences(JSON.parse(localStorage.getItem(ADMIN_PREFERENCES_KEY) || '{}')); } catch { setPreferences({}); }
+    };
+    window.addEventListener('expressnet-admin-preferences', handlePreferences);
+    return () => window.removeEventListener('expressnet-admin-preferences', handlePreferences);
+  }, []);
+
+  const accent = accentColors[preferences.accent] || accentColors.blue;
+  const effectiveTheme = preferences.theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : (preferences.theme || 'dark');
+  const adminStyle = {
+    '--admin-accent': accent,
+    '--admin-accent-soft': `${accent}1a`,
+    '--admin-accent-border': `${accent}55`,
+    '--admin-font-family': preferences.font === 'system-ui' ? 'system-ui' : (preferences.font || 'Inter'),
+  };
 
   const logout = () => {
     logoutAdmin();
     window.location.assign(adminLoginUrl());
   };
 
-  const navClass = ({ isActive }) =>
-    [
-      'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[12px] font-normal transition',
-      isActive ? 'bg-[var(--sidebar-active)] text-white shadow-[inset_3px_0_0_rgba(255,255,255,0.28)]' : 'text-white/88 hover:bg-white/10 hover:text-white',
-    ].join(' ');
+  const goTo = (path) => {
+    navigate(path);
+    setSearch('');
+    setSearchOpen(false);
+    setOpen(false);
+  };
 
   return (
-    <div className="tenant-app theme-page min-h-screen text-[var(--app-text)]">
-      <div
-        className={`fixed inset-0 z-30 bg-slate-950/50 lg:hidden ${open ? '' : 'hidden'}`}
-        onClick={() => setOpen(false)}
-      />
+    <div className="admin-shell min-h-screen bg-[#f4f6fa] text-slate-900" data-admin-theme={effectiveTheme} style={adminStyle}>
+      <button className={`fixed inset-0 z-30 bg-slate-950/55 backdrop-blur-[2px] lg:hidden ${open ? '' : 'hidden'}`} onClick={() => setOpen(false)} aria-label="Close navigation" />
 
-      <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col px-3 py-4 text-white shadow-2xl transition-transform lg:w-[232px] lg:translate-x-0 ${
-          open ? 'translate-x-0' : '-translate-x-full'
-        }`}
-        style={{ background: 'linear-gradient(180deg, var(--sidebar-top) 0%, var(--sidebar-middle) 46%, var(--sidebar-bottom) 100%)' }}
-      >
-        <div className="mb-3 flex items-center justify-between rounded-md border p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]" style={{ background: 'color-mix(in srgb, var(--sidebar-bottom) 28%, transparent)', borderColor: 'color-mix(in srgb, var(--sidebar-border) 32%, transparent)' }}>
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white shadow-sm" style={{ background: 'var(--sidebar-avatar)' }}>
-              <Wifi size={20} />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-[13px] font-semibold text-white">ExpressNet Mtandao</h1>
-              <p className="truncate text-[11px] font-normal text-white/70">Admin Portal</p>
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[278px] flex-col border-r border-white/10 bg-[#101c32] text-white shadow-2xl transition-transform duration-200 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex h-[78px] items-center justify-between border-b border-white/10 px-5">
+          <div className="flex items-center gap-3">
+            <div className="admin-sidebar-logo flex h-10 w-10 items-center justify-center rounded-xl shadow-lg"><Wifi size={21} strokeWidth={2.5} /></div>
+            <div>
+              <p className="text-[14px] font-bold tracking-tight">ExpressNet</p>
+              <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Control center</p>
             </div>
           </div>
-          <button className="rounded-md p-2 hover:bg-white/10 lg:hidden" onClick={() => setOpen(false)} aria-label="Close admin nav">
-            <X size={20} />
-          </button>
+          <button className="rounded-lg p-2 text-slate-400 hover:bg-white/10 hover:text-white lg:hidden" onClick={() => setOpen(false)} aria-label="Close navigation"><X size={18} /></button>
         </div>
 
-        <nav className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-          {links.map(({ to, label, icon: Icon }) => (
-            <NavLink key={`${to}-${label}`} to={to} className={navClass} onClick={() => setOpen(false)}>
-              <Icon size={16} />
-              <span className="flex-1">{label}</span>
-            </NavLink>
+        <nav className="min-h-0 flex-1 space-y-6 overflow-y-auto px-3 py-7">
+          {sections.map((section) => (
+            <div key={section.label}>
+              <p className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">{section.label}</p>
+              <div className="space-y-1">
+                {section.links.map(({ to, label, icon: Icon }) => (
+                  <NavLink key={to} to={to} end={to === adminPath('dashboard')} onClick={() => setOpen(false)} className={({ isActive }) => `admin-nav-link group relative flex h-10 items-center gap-3 rounded-lg px-3 text-[12px] font-normal tracking-[0.01em] transition ${isActive ? 'is-active shadow-md shadow-black/10' : 'text-slate-300 hover:bg-white/[0.07] hover:text-white'}`}>
+                    <Icon size={16} strokeWidth={1.65} />
+                    <span className="flex-1">{label}</span>
+                    <ArrowRight size={13} className="opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-60" />
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
-        <div className="border-t border-white/10 pt-4">
-          <div className="mb-3 flex items-center gap-3 rounded-md px-2 py-2">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'var(--sidebar-avatar)' }}>
-              <UserCircle size={27} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] font-semibold">{admin?.name || 'Super Admin'}</p>
-              <p className="truncate text-[11px] font-normal text-white/70">{admin?.email || 'admin@expressnet.co.ke'}</p>
-            </div>
-            <ChevronDown size={14} className="text-white/75" />
+        <div className="border-t border-white/10 p-4">
+          <div className="mb-3 flex min-w-0 items-center gap-3 rounded-xl bg-white/[0.05] p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3b554] text-xs font-bold text-[#1a2539]">{String(admin?.name || 'A').trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase()}</div>
+            <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{admin?.name || 'Administrator'}</p><p className="mt-1 truncate text-[10px] text-slate-400">{admin?.email || 'Platform operator'}</p></div>
           </div>
-          <button type="button" className="flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-[12px] font-normal text-white/88 hover:bg-white/10 hover:text-white" onClick={logout}>
-            <LogOut size={16} />
-            Logout
-          </button>
+          <button type="button" className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-xs font-medium text-slate-300 transition hover:bg-rose-400/10 hover:text-rose-200" onClick={logout}><LogOut size={16} /> Sign out</button>
         </div>
       </aside>
 
-      <div className="min-h-screen w-full min-w-0 lg:ml-[232px] lg:w-[calc(100%-232px)]">
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 px-4 lg:px-8">
-          <div className="flex min-w-0 items-center gap-4">
-            <button className="rounded-md p-2 text-slate-600 hover:bg-slate-100 lg:hidden" onClick={() => setOpen(true)} aria-label="Open admin nav">
-              <Menu size={22} />
-            </button>
-            <button className="hidden rounded-md p-2 text-slate-600 hover:bg-slate-100 lg:block" aria-label="Toggle menu">
-              <Menu size={22} />
-            </button>
-            <div>
-              <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Admin</p>
-              <h2 className="text-base font-medium text-slate-950">Dashboard</h2>
-              <div className="mt-1 hidden items-center gap-2 text-[11px] font-normal text-slate-400 sm:flex">
-                <span>Home</span>
-                <span>/</span>
-                <span className="text-app-accent">Dashboard</span>
+      <div className="min-h-screen lg:pl-[278px]">
+        <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
+          <div className="flex min-h-[78px] items-center justify-between gap-4 px-4 sm:px-7 xl:px-10">
+            <div className="flex min-w-0 items-center gap-3">
+              <button className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50 lg:hidden" onClick={() => setOpen(true)} aria-label="Open navigation"><Menu size={19} /></button>
+              <div className="min-w-0">
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-medium text-slate-400"><span>Control center</span><span>/</span><span className="truncate text-slate-600">{title}</span></div>
+                <h1 className="truncate text-[19px] font-bold tracking-tight text-slate-900">{title}</h1>
               </div>
             </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <label className="relative hidden w-[270px] md:block">
-              <Search size={15} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                className="form-input h-8 pl-10"
-                placeholder="Search tenants, invoices, users..."
-              />
-            </label>
-            <button className="relative flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100" aria-label="Notifications">
-              <Bell size={20} />
-              <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-medium text-white" style={{ background: 'var(--app-accent)' }}>5</span>
-            </button>
-            <div className="hidden items-center gap-3 md:flex">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full text-white" style={{ background: 'var(--app-accent)' }}>
-                <UserCircle size={25} />
+            <div className="flex items-center gap-3">
+              <div className="relative hidden sm:block">
+                <div className={`flex h-10 w-[min(34vw,330px)] items-center gap-2 rounded-xl border bg-slate-50 px-3 transition ${searchOpen ? 'border-orange-300 ring-4 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
+                  <Search size={16} className="shrink-0 text-slate-400" />
+                  <input id="admin-page-search" value={search} onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} placeholder="Jump to a page..." className="min-w-0 flex-1 bg-transparent text-xs text-slate-800 outline-none placeholder:text-slate-400" />
+                  <kbd className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[9px] font-semibold text-slate-400"><Command size={10} /> K</kbd>
+                </div>
+                {searchOpen && <>
+                  <button className="fixed inset-0 z-20 cursor-default" aria-label="Close page search" onClick={() => setSearchOpen(false)} />
+                  <div className="absolute right-0 top-12 z-30 w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/10">
+                    <p className="px-2.5 py-2 text-[9px] font-bold uppercase tracking-[0.14em] text-slate-400">Pages</p>
+                    {matches.length ? matches.map(({ to, label, icon: Icon }) => <button key={to} type="button" onClick={() => goTo(to)} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-orange-50 hover:text-slate-950"><Icon size={15} className="text-slate-400" />{label}<ArrowRight size={13} className="ml-auto text-slate-300" /></button>) : <p className="px-2.5 py-3 text-xs text-slate-500">No matching pages.</p>}
+                  </div>
+                </>}
               </div>
-              <div>
-                <p className="text-[12px] font-medium text-slate-950">{admin?.name || 'Admin User'}</p>
-                <p className="text-[11px] font-normal text-slate-500">{admin?.role || 'Super Admin'}</p>
-              </div>
-              <ChevronDown size={14} className="text-slate-500" />
+              <div className="hidden items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /><span className="text-[10px] font-semibold text-emerald-700">Platform online</span></div>
             </div>
           </div>
         </header>
-
-        <main className="mx-auto w-full max-w-[1200px] px-4 py-4 sm:px-8 sm:py-5">
-          <Outlet />
-        </main>
+        <main className="mx-auto w-full max-w-[1540px] px-4 py-6 sm:px-7 sm:py-8 xl:px-10"><Outlet /></main>
       </div>
     </div>
   );

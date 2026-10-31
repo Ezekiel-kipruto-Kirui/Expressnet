@@ -181,6 +181,8 @@ class SimpleRateLimitMiddleware:
             rule = (120, 10 * 60)
         if request.method.upper() == "POST" and request.path.startswith(f"/{api_base}/daraja/callback/"):
             rule = (20, 60)
+        if request.method.upper() == "POST" and request.path.startswith(f"/{api_base}/daraja/b2b/"):
+            rule = (20, 60)
         if rule:
             limit, window = rule
             ip = request.META.get("HTTP_X_FORWARDED_FOR", request.META.get("REMOTE_ADDR", "")).split(",")[0].strip()

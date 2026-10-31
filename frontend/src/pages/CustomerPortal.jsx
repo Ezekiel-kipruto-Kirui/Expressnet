@@ -100,6 +100,7 @@ export default function CustomerPortal() {
   const [tvMacAddress, setTvMacAddress] = useState('');
   const [selectedPackage, setSelectedPackage] = useState(null);
   const [receiptCode, setReceiptCode] = useState('');
+  const [recoveryPhone, setRecoveryPhone] = useState('');
   const [voucherCode, setVoucherCode] = useState('');
   const [accessUsername, setAccessUsername] = useState('');
   const [accessPassword, setAccessPassword] = useState('');
@@ -165,6 +166,10 @@ export default function CustomerPortal() {
     setRouterContext({ routerIp, clientIp, mac: routerMac || '', linkLogin, dst });
     const reference = params.get('reference') || params.get('trxref');
     const returnedPaymentId = params.get('payment_id') || params.get('paymentId');
+    const returnedVerifyToken = params.get('verify_token') || params.get('verifyToken') || '';
+    if (returnedPaymentId && returnedVerifyToken) {
+      setPendingPayment({ id: returnedPaymentId, verifyToken: returnedVerifyToken });
+    }
     if (!reference && !returnedPaymentId) return;
     // Carried through by the router's hotspot login.html redirect (see
     // hotspot_login_redirect_html) so we know which trapped device to hand
@@ -366,6 +371,8 @@ export default function CustomerPortal() {
     try {
       const { data } = await publicApi.post(`/public/${tenantId}/redeem`, {
         receipt_code: receiptCode,
+        verify_token: pendingPayment?.verifyToken || new URLSearchParams(window.location.search).get('verify_token') || '',
+        phone: recoveryPhone,
         router_ip: routerContext.ip,
         link_login: routerContext.linkLogin,
         dst: routerContext.dst,
@@ -483,7 +490,8 @@ export default function CustomerPortal() {
               <button type="submit" className="inline-flex h-10 items-center justify-center rounded-md bg-[#2600d8] px-5 text-sm font-bold text-white shadow-lg shadow-black/30" disabled={recovering}>Login</button>
             </form>
 
-            <form className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" onSubmit={recover}>
+            <form className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]" onSubmit={recover}>
+              <input className="h-10 rounded-md border border-white/10 bg-black px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[#2600d8]" inputMode="tel" placeholder="Phone used to pay" value={recoveryPhone} onChange={(event) => setRecoveryPhone(event.target.value)} />
               <div className="relative">
                 <KeyRound className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={17} />
                 <input

@@ -1,21 +1,19 @@
 import {
-  ArrowDownUp,
   Building2,
   CalendarClock,
   CheckCircle2,
-  ChevronDown,
   Clock3,
   Download,
   Edit,
+  Eye,
   ExternalLink,
-  Grid3X3,
-  List,
   LockKeyhole,
   MoreHorizontal,
   Plus,
   Power,
   Search,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -93,14 +91,6 @@ function tenantInitials(name) {
 }
 
 function StatCard({ label, value, note, icon: Icon, tone = 'blue' }) {
-  const tones = {
-    blue: 'bg-blue-100 text-blue-600',
-    green: 'bg-emerald-100 text-emerald-600',
-    amber: 'bg-amber-100 text-amber-600',
-    rose: 'bg-rose-100 text-rose-600',
-    orange: 'bg-orange-100 text-orange-600',
-  };
-
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,34,64,0.05)]">
       <div className="flex items-start justify-between gap-3">
@@ -108,7 +98,7 @@ function StatCard({ label, value, note, icon: Icon, tone = 'blue' }) {
           <p className="theme-muted text-xs font-medium">{label}</p>
           <p className="theme-text mt-1 text-2xl font-semibold leading-none tracking-tight">{value}</p>
         </div>
-        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${tones[tone]}`}>
+        <div className="admin-accent-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-full">
           <Icon size={21} />
         </div>
       </div>
@@ -122,7 +112,7 @@ function StatusFilterButton({ active, children, dot, onClick }) {
     <button
       type="button"
       className={`inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition ${
-        active ? 'border-blue-500 bg-white text-blue-600 shadow-[0_0_0_3px_rgba(59,130,246,0.12)]' : 'border-slate-200 bg-white text-slate-700 hover:border-blue-200'
+        active ? 'admin-selected-option' : 'admin-option hover:border-blue-200'
       }`}
       onClick={onClick}
     >
@@ -144,9 +134,8 @@ function HealthBadge({ value }) {
 }
 
 function TenantAvatar({ tenant, index }) {
-  const colors = ['bg-blue-600', 'bg-orange-500', 'bg-cyan-500', 'bg-violet-600', 'bg-sky-500', 'bg-red-500', 'bg-slate-300', 'bg-emerald-500', 'bg-indigo-500', 'bg-purple-500'];
   return (
-    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${colors[index % colors.length]}`}>
+    <div className="admin-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
       {tenant.logo ? <img src={tenant.logo} alt="" className="h-full w-full rounded-full object-cover" /> : tenantInitials(tenant.business_name)}
     </div>
   );
@@ -173,11 +162,16 @@ export default function AdminTenants() {
   const [errors, setErrors] = useState({});
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sortOrder, setSortOrder] = useState('newest');
   const [page, setPage] = useState(1);
   const [openActionId, setOpenActionId] = useState(null);
   const [subscriptionModalTenant, setSubscriptionModalTenant] = useState(null);
   const [subscriptionDate, setSubscriptionDate] = useState('');
   const [subscriptionSaving, setSubscriptionSaving] = useState(false);
+  const [viewTenant, setViewTenant] = useState(null);
+  const [viewTab, setViewTab] = useState('overview');
+  const [viewData, setViewData] = useState(null);
+  const [viewLoading, setViewLoading] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -277,9 +271,7 @@ export default function AdminTenants() {
 
       if (modalMode === 'edit') {
         delete payload.password;
-        ['mikrotik_pass'].forEach((field) => {
-          if (!String(payload[field] || '').trim()) delete payload[field];
-        });
+        ['mikrotik_host', 'mikrotik_user', 'mikrotik_pass', 'mikrotik_port'].forEach((field) => delete payload[field]);
         await adminApi.patch(`/admin/tenants/${editingTenant.id}`, payload);
         toast.success('Tenant updated');
       } else {
@@ -294,6 +286,43 @@ export default function AdminTenants() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const deleteTenant = async (tenant) => {
+    setOpenActionId(null);
+    if (!window.confirm(`Permanently delete ${tenant.business_name || 'this tenant'} and its customer, payment, and subscription records? This cannot be undone.`)) return;
+    setUpdatingId(tenant.id);
+    try {
+      await adminApi.delete(`/admin/tenants/${tenant.id}`);
+      toast.success('Tenant and its data deleted');
+      await load();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to delete tenant');
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const openTenantView = async (tenant) => {
+    setOpenActionId(null);
+    setViewTenant(tenant);
+    setViewTab('overview');
+    setViewData(null);
+    setViewLoading(true);
+    try {
+      const { data } = await adminApi.get(`/admin/tenants/${encodeURIComponent(tenant.id)}/overview`);
+      setViewData(data);
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to load tenant overview');
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  const closeTenantView = () => {
+    setViewTenant(null);
+    setViewData(null);
+    setViewTab('overview');
   };
 
   const setStatus = async (tenant, status) => {
@@ -316,13 +345,17 @@ export default function AdminTenants() {
 
   const filteredTenants = useMemo(() => {
     return tenants.filter((tenant) => {
-      const text = `${tenant.business_name || ''} ${tenant.owner_name || ''} ${tenant.email || ''}`.toLowerCase();
+      const text = `${tenant.business_name || ''} ${tenant.owner_name || ''} ${tenant.email || ''} ${tenant.domain || ''}`.toLowerCase();
       if (!text.includes(query.toLowerCase())) return false;
       if (statusFilter === 'all') return true;
       if (statusFilter === 'expiring') return tenant.subscription && Number(tenant.subscription.days_until_expiry) <= 7 && Number(tenant.subscription.days_until_expiry) >= 0;
       return tenant.status === statusFilter;
+    }).sort((a, b) => {
+      if (sortOrder === 'oldest') return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+      if (sortOrder === 'name') return String(a.business_name || '').localeCompare(String(b.business_name || ''));
+      return new Date(b.created_at || b.updated_at || 0) - new Date(a.created_at || a.updated_at || 0);
     });
-  }, [tenants, query, statusFilter]);
+  }, [tenants, query, statusFilter, sortOrder]);
 
   const pageSize = 10;
   const pagedTenants = filteredTenants.slice((page - 1) * pageSize, page * pageSize);
@@ -359,45 +392,61 @@ export default function AdminTenants() {
     }
   };
 
+  const exportCsv = () => {
+    const columns = [
+      ['Business', 'business_name'], ['Owner', 'owner_name'], ['Email', 'email'], ['Phone', 'phone'],
+      ['Status', 'status'], ['Plan', 'plan'], ['Created', 'created_at'], ['Subscription expiry', 'expires_at'],
+    ];
+    const cell = (value) => {
+      let text = String(value ?? '');
+      if (/^[=+\-@]/.test(text)) text = `'${text}`;
+      return `"${text.replaceAll('"', '""')}"`;
+    };
+    const rows = filteredTenants.map((tenant) => [
+      tenant.business_name, tenant.owner_name, tenant.email, tenant.phone, tenant.status,
+      tenant.subscription?.plan, tenant.created_at, tenant.subscription?.expires_at,
+    ]);
+    const csv = [columns.map(([label]) => cell(label)).join(','), ...rows.map((row) => row.map(cell).join(','))].join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'expressnet-tenants.csv';
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="page-title">Tenants</h1>
-          <div className="mt-1 flex items-center gap-2 text-xs font-normal text-slate-400">
-            <span>Home</span>
-            <span>/</span>
-            <span className="text-blue-600">Tenants</span>
-          </div>
+          <p className="admin-accent-label text-[10px] font-bold uppercase tracking-[0.18em]">Organizations</p>
+          <h2 className="admin-heading mt-1 text-2xl font-bold tracking-tight">Tenant directory</h2>
+          <p className="admin-muted mt-1 text-sm">Review subscriptions, onboarding, and account health across the platform.</p>
         </div>
-        <button className="btn-primary" type="button" onClick={openCreate}>
+        <button className="admin-primary inline-flex h-11 items-center gap-2 rounded-xl px-4 text-xs font-semibold shadow-lg shadow-slate-900/10 transition hover:brightness-90" type="button" onClick={openCreate}>
           <Plus size={16} />
           Create Tenant
-          <ChevronDown size={14} />
         </button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <StatCard label="Total Tenants" value={stats.total.toLocaleString()} note="+ 12 this month" icon={Building2} />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <StatCard label="Total tenants" value={stats.total.toLocaleString()} note="Registered organizations" icon={Building2} />
         <StatCard label="Active Tenants" value={stats.active.toLocaleString()} note={`${stats.total ? ((stats.active / stats.total) * 100).toFixed(1) : '0.0'}% of total`} icon={CheckCircle2} tone="green" />
         <StatCard label="Pending Setup" value={stats.pending.toLocaleString()} note="Requires onboarding" icon={Clock3} tone="amber" />
         <StatCard label="Suspended" value={stats.suspended.toLocaleString()} note={`${stats.total ? ((stats.suspended / stats.total) * 100).toFixed(1) : '0.0'}% of total`} icon={LockKeyhole} tone="rose" />
         <StatCard label="Expiring Soon" value={stats.expiring.toLocaleString()} note="Within 7 days" icon={CalendarClock} tone="orange" />
       </div>
 
-      <section className="rounded-lg border border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,34,64,0.05)]">
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_16px_48px_rgba(15,23,42,0.06)]">
         <div className="flex flex-col gap-4 border-b border-slate-100 p-4 xl:flex-row xl:items-center xl:justify-between">
           <label className="relative block w-full xl:max-w-[390px]">
             <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" />
             <input className="form-input h-8 pl-10" placeholder="Search tenants, owner, email or domain..." value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} />
           </label>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className="btn-secondary">
+            <button type="button" onClick={exportCsv} className="admin-accent-button inline-flex h-9 items-center gap-2 rounded-lg border bg-white px-3 text-xs font-semibold transition hover:border-slate-300 hover:bg-slate-50">
               <Download size={15} />
-              Export
-            </button>
-            <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label="Export options">
-              <ChevronDown size={15} />
+              Export {filteredTenants.length} rows
             </button>
           </div>
         </div>
@@ -412,17 +461,11 @@ export default function AdminTenants() {
             <StatusFilterButton active={statusFilter === 'expiring'} dot="bg-orange-500" onClick={() => { setStatusFilter('expiring'); setPage(1); }}>Expiring Soon</StatusFilterButton>
             <StatusFilterButton active={statusFilter === 'inactive'} dot="bg-slate-400" onClick={() => { setStatusFilter('inactive'); setPage(1); }}>Offline</StatusFilterButton>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-normal text-slate-500">Sort by</span>
-            <button type="button" className="btn-secondary">
-              <ArrowDownUp size={14} />
-              Newest First
-              <ChevronDown size={14} />
-            </button>
-            <div className="flex rounded-md border border-slate-200 p-1">
-              <button type="button" className="flex h-8 w-8 items-center justify-center rounded bg-blue-600 text-white" aria-label="Grid view"><Grid3X3 size={15} /></button>
-              <button type="button" className="flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-slate-50" aria-label="List view"><List size={15} /></button>
-            </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="tenant-sort" className="admin-muted text-xs font-medium">Sort</label>
+            <select id="tenant-sort" className="admin-input h-9 rounded-lg border px-3 text-xs font-semibold outline-none focus:ring-4" value={sortOrder} onChange={(event) => { setSortOrder(event.target.value); setPage(1); }}>
+              <option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="name">Business name</option>
+            </select>
           </div>
         </div>
 
@@ -473,7 +516,7 @@ export default function AdminTenants() {
                 </td>
                 <td className="px-4 py-3">
                   <p className="theme-text text-xs font-semibold">{formatKES(revenue)}</p>
-                  <p className={`text-[11px] font-normal ${revenue > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{revenue > 0 ? '+ 8.2%' : '0%'}</p>
+                  <p className={`text-[11px] font-normal ${revenue > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{revenue > 0 ? 'Revenue recorded' : 'No revenue recorded'}</p>
                 </td>
                 <td className="px-4 py-3"><HealthBadge value={health} /></td>
                 <td className="px-4 py-3">
@@ -483,19 +526,20 @@ export default function AdminTenants() {
                 <td className="theme-text px-4 py-3 text-xs font-medium">{formatDate(tenant.created_at)}</td>
                 <td className="px-4 py-3">
                   <div className="relative inline-flex">
-                    <button
-                      className="btn-secondary"
+                      <button
+                      className="admin-accent-button flex h-9 w-9 items-center justify-center rounded-lg border transition hover:bg-slate-50"
                       type="button"
                       onClick={() => setOpenActionId((current) => (current === tenant.id ? null : tenant.id))}
                       disabled={updatingId === tenant.id}
                       aria-expanded={openActionId === tenant.id}
                       aria-haspopup="menu"
+                      aria-label={`Open actions for ${tenant.business_name || 'tenant'}`}
                     >
-                      Actions
                       <MoreHorizontal size={15} />
                     </button>
                     {openActionId === tenant.id && (
                       <div className="theme-card absolute right-0 top-10 z-20 w-48 overflow-hidden rounded-md border py-1 text-xs font-medium shadow-[0_18px_40px_rgba(15,34,64,0.16)]" role="menu">
+                        <button className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-50" type="button" onClick={() => openTenantView(tenant)} role="menuitem"><Eye size={14} />View tenant</button>
                         <button className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-50" type="button" onClick={() => { setOpenActionId(null); openEdit(tenant); }} role="menuitem">
                           <Edit size={14} />
                           Edit tenant
@@ -515,6 +559,7 @@ export default function AdminTenants() {
                             Suspend tenant
                           </button>
                         )}
+                        <button className="flex w-full items-center gap-2 border-t border-slate-200 px-3 py-2 text-left text-rose-600 hover:bg-rose-50" type="button" onClick={() => deleteTenant(tenant)} role="menuitem"><Trash2 size={14} />Delete tenant</button>
                       </div>
                     )}
                   </div>
@@ -571,7 +616,7 @@ export default function AdminTenants() {
               </div>
             </section>
 
-            <section>
+            {modalMode === 'create' && <section>
               <h2 className="theme-text mb-3 text-sm font-semibold tracking-tight">MikroTik</h2>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field name="mikrotik_host" value={form.mikrotik_host} error={errors.mikrotik_host} onChange={update} />
@@ -579,7 +624,7 @@ export default function AdminTenants() {
                 <Field name="mikrotik_pass" type="password" value={form.mikrotik_pass} error={errors.mikrotik_pass} onChange={update} placeholder={modalMode === 'edit' ? 'Leave blank to keep existing' : ''} />
                 <Field name="mikrotik_port" type="number" value={form.mikrotik_port} error={errors.mikrotik_port} onChange={update} />
               </div>
-            </section>
+            </section>}
 
             <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
               <button type="button" className="btn-secondary" onClick={closeModal}>Cancel</button>
@@ -612,6 +657,32 @@ export default function AdminTenants() {
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {viewTenant && (
+        <Modal title={viewTenant.business_name || 'Tenant overview'} onClose={closeTenantView}>
+          <div className="space-y-5">
+            <div className="flex gap-2 border-b border-slate-200 pb-3 dark:border-slate-700">
+              {['overview', 'network'].map((tab) => <button key={tab} type="button" onClick={() => setViewTab(tab)} className={`rounded-lg px-3 py-2 text-xs font-semibold capitalize transition ${viewTab === tab ? 'bg-app-accent text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{tab}</button>)}
+            </div>
+            {viewLoading ? <div className="space-y-3"><div className="h-24 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800"/><div className="h-52 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800"/></div> : viewTab === 'overview' ? <div className="space-y-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Routers</p><p className="theme-text mt-2 text-2xl font-bold">{Number(viewData?.routerCount || 0).toLocaleString()}</p><p className="theme-muted mt-1 text-[10px]">Registered in the tenant network</p></section>
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Active sessions</p><p className="theme-text mt-2 text-2xl font-bold">{Number(viewData?.activeSessions || 0).toLocaleString()}</p><p className="theme-muted mt-1 text-[10px]">Latest available router snapshot and RADIUS accounting</p></section>
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Current day earnings</p><p className="theme-text mt-2 text-xl font-bold">{formatKES(viewData?.revenueToday)}</p><p className="theme-muted mt-1 text-[10px]">Successful customer payments today</p></section>
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Current month earnings</p><p className="theme-text mt-2 text-xl font-bold">{formatKES(viewData?.revenueThisMonth)}</p><p className="theme-muted mt-1 text-[10px]">Successful customer payments · {viewData?.systemFeePeriod || ''}</p></section>
+                <section className="rounded-xl border border-[var(--app-accent)]/30 bg-app-accent/5 p-4 sm:col-span-2"><p className="text-[10px] font-semibold uppercase text-app-accent">Current month system fee due</p><p className="mt-2 text-2xl font-bold text-app-accent">{viewData?.systemFeeCurrency || 'KES'} {Number(viewData?.systemFeeDue || 0).toLocaleString()}</p><p className="mt-1 text-[10px] text-slate-500">Based on {viewData?.systemFeePercent ?? 0}% of {viewData?.systemFeeCurrency || 'KES'} {Number(viewData?.systemFeeSalesBasis || 0).toLocaleString()} in successful sales</p></section>
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">PPPoE customers</p><p className="theme-text mt-2 text-xl font-bold">{Number(viewData?.pppoeCustomers || 0).toLocaleString()}</p></section>
+                <section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Hotspot users</p><p className="theme-text mt-2 text-xl font-bold">{Number(viewData?.hotspotUsers || 0).toLocaleString()}</p></section>
+              </div>
+              <section className="theme-card rounded-xl border p-4"><div className="mb-4 flex items-start justify-between"><div><h3 className="theme-text text-xs font-bold">Six month earnings</h3><p className="theme-muted mt-1 text-[10px]">Successful customer payments</p></div><span className="theme-muted text-[10px]">KES</span></div><div className="grid h-36 grid-cols-6 items-end gap-2">{(viewData?.revenueByMonth || []).map((month) => { const max = Math.max(1, ...(viewData?.revenueByMonth || []).map((entry) => Number(entry.amount || 0))); const height = Math.max(4, Number(month.amount || 0) / max * 100); return <div key={month.month} className="flex h-full min-w-0 flex-col items-center justify-end gap-1"><span className="theme-muted truncate text-[8px]">{Number(month.amount || 0).toLocaleString()}</span><div className="w-full max-w-10 rounded-t-md bg-app-accent" style={{ height: `${height}%` }}/><span className="theme-muted text-[9px]">{month.month?.slice(5)}</span></div>; })}</div></section>
+            </div> : <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2"><section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Network status</p><p className="theme-text mt-2 text-lg font-bold capitalize">{viewData?.network?.status || 'unknown'}</p><p className="theme-muted mt-1 text-[10px]">{viewData?.network?.provisioningStatus || viewData?.network?.sessionSource || ''}</p></section><section className="theme-card rounded-xl border p-4"><p className="theme-muted text-[10px] font-semibold uppercase">Active sessions</p><p className="theme-text mt-2 text-lg font-bold">{Number(viewData?.network?.activeSessions || 0).toLocaleString()}</p><p className="theme-muted mt-1 text-[10px]">{viewData?.network?.sessionSource || 'No active session records'}</p></section></div>
+              <section className="theme-card rounded-xl border p-4"><div className="mb-3"><h3 className="theme-text text-xs font-bold">Tenant network configuration</h3><p className="theme-muted mt-1 text-[10px]">Read from the tenant’s saved account network settings.</p></div><div className="grid gap-3 sm:grid-cols-3"><div><p className="theme-muted text-[10px]">Primary host</p><p className="theme-text mt-1 break-all text-xs font-semibold">{viewData?.network?.host || 'Not configured'}</p></div><div><p className="theme-muted text-[10px]">Router user</p><p className="theme-text mt-1 text-xs font-semibold">{viewData?.network?.username || '—'}</p></div><div><p className="theme-muted text-[10px]">API port</p><p className="theme-text mt-1 text-xs font-semibold">{viewData?.network?.port || '—'}</p></div></div><p className="theme-muted mt-3 text-[10px]">RADIUS accounting: {viewData?.network?.radiusEnabled ? 'Enabled' : 'Not enabled'}{viewData?.network?.lastSeenAt ? ` · Last router contact ${new Date(viewData.network.lastSeenAt).toLocaleString()}` : ''}</p></section>
+              <section className="theme-card rounded-xl border p-4"><h3 className="theme-text mb-3 text-xs font-bold">Registered routers ({viewData?.network?.routers?.length || 0})</h3>{viewData?.network?.routers?.length ? <div className="space-y-2">{viewData.network.routers.map((router) => <div key={router.id} className="grid gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-4 dark:border-slate-700"><div><p className="theme-muted text-[9px] uppercase">Name</p><p className="theme-text mt-1 text-xs font-semibold">{router.name || 'Router'}</p></div><div><p className="theme-muted text-[9px] uppercase">Host</p><p className="theme-text mt-1 break-all text-xs">{router.host || '—'}</p></div><div><p className="theme-muted text-[9px] uppercase">Model</p><p className="theme-text mt-1 text-xs">{router.model || '—'}</p></div><div><p className="theme-muted text-[9px] uppercase">Status · Port</p><p className="theme-text mt-1 text-xs capitalize">{router.status || 'configured'} · {router.port || '—'}</p></div></div>)}</div> : <p className="theme-muted text-xs">No router records are linked to this tenant account.</p>}</section>
+            </div>}
+          </div>
         </Modal>
       )}
     </div>

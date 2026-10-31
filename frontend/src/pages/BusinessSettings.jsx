@@ -135,7 +135,6 @@ export default function BusinessSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
-  const [dangerConfirm, setDangerConfirm] = useState('');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   useEffect(() => {
@@ -245,20 +244,6 @@ export default function BusinessSettings() {
       toast.success(data.message || 'Test WhatsApp sent');
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to send test WhatsApp');
-    }
-  };
-
-  const deleteCustomers = async () => {
-    if (!dangerConfirm.trim()) {
-      toast.error('Type your business name to confirm');
-      return;
-    }
-    try {
-      const { data } = await api.post('/settings/delete-customers', { confirm: dangerConfirm });
-      toast.success(data.message || 'Customers deleted');
-      setDangerConfirm('');
-    } catch (error) {
-      toast.error(error.response?.data?.message || 'Could not delete customers');
     }
   };
 
@@ -419,19 +404,6 @@ export default function BusinessSettings() {
 
         {activeTab === 'users' && <TenantUsers embedded />}
       </div>
-
-      {activeTab !== 'users' && (
-        <div className="mt-6 rounded-lg border border-red-900/60 bg-red-950/30 p-5">
-          <h2 className="text-sm font-semibold text-red-200">Danger Zone</h2>
-          <p className="mt-1 text-xs text-red-100/80">Delete all customers and attempt to remove their MikroTik access records. This cannot be undone.</p>
-          <div className="mt-4 flex flex-col gap-3 md:flex-row">
-            <Input placeholder={`Type ${settings.companyName} to confirm`} value={dangerConfirm} onChange={(event) => setDangerConfirm(event.target.value)} />
-            <button type="button" className="h-10 shrink-0 rounded-md bg-red-600 px-4 text-xs font-semibold text-white hover:bg-red-700" onClick={deleteCustomers}>
-              Delete all customers
-            </button>
-          </div>
-        </div>
-      )}
 
       {showFormActions && (
         <div className="mt-6 flex gap-3">

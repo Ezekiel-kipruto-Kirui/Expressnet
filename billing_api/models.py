@@ -3,6 +3,7 @@ import secrets as crypto_secrets
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
+from django.db.models.functions import Lower, Trim
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
@@ -111,6 +112,15 @@ class Tenant(ExtraFieldsModel):
     password = models.CharField(max_length=255)
     status = models.CharField(max_length=50, blank=True, default="pending_setup")
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower(Trim("business_name")),
+                condition=~models.Q(business_name="") & ~models.Q(business_name__iexact="citynet"),
+                name="unique_tenant_business_name_ci",
+            ),
+        ]
+
     mikrotik_host = models.CharField(max_length=255, blank=True, default="")
     mikrotik_user = models.CharField(max_length=255, blank=True, default="")
     mikrotik_pass = models.CharField(max_length=255, blank=True, default="")
@@ -193,6 +203,7 @@ class Customer(ExtraFieldsModel):
     username = models.CharField(max_length=255, blank=True, default="")
     password = models.CharField(max_length=255, blank=True, default="")
     package = models.CharField(max_length=255, blank=True, default="")
+    ip_address = models.CharField(max_length=45, blank=True, default="")
     service_type = models.CharField(max_length=50, blank=True, default="pppoe")
     radius_secret = models.CharField(max_length=255, blank=True, default="")
     status = models.CharField(max_length=50, blank=True, default="inactive")
@@ -208,10 +219,21 @@ class Customer(ExtraFieldsModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["tenant", "username"],
+                models.F("tenant"),
+                Lower("username"),
                 condition=~models.Q(service_type="static"),
                 name="unique_customer_username_per_tenant",
             ),
+            models.UniqueConstraint(
+                fields=["tenant", "ip_address"],
+                condition=models.Q(service_type="static") & ~models.Q(ip_address=""),
+                name="unique_static_customer_ip_per_tenant",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "created_at"], name="customer_tenant_created_idx"),
+            models.Index(fields=["tenant", "status", "service_type"], name="customer_tenant_state_idx"),
+            models.Index(fields=["tenant", "service_type", "expiry_date"], name="customer_tenant_expiry_idx"),
         ]
 
     def as_dict(self, include_id=True, exclude=None):
@@ -253,6 +275,12 @@ class Payment(ExtraFieldsModel):
     access_status = models.CharField(max_length=80, blank=True, null=True)
     callback_result_code = models.CharField(max_length=80, blank=True, null=True)
     callback_result_desc = models.TextField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "status", "initiated_at"], name="payment_tenant_status_init_idx"),
+            models.Index(fields=["tenant", "status", "paid_at"], name="payment_tenant_status_paid_idx"),
+        ]
 
     def apply_data(self, data):
         customer_id = data.pop("customer_id", None) if "customer_id" in data else None
@@ -338,6 +366,8 @@ class SiteSettings(ExtraFieldsModel):
 class AdminAuditLog(models.Model):
     admin_id = models.CharField(max_length=80, blank=True, null=True)
     admin_email = models.EmailField(blank=True, null=True)
+    actor_type = models.CharField(max_length=24, blank=True, default="admin")
+    tenant_id = models.CharField(max_length=80, blank=True, null=True, db_index=True)
     action = models.CharField(max_length=120, blank=True, null=True)
     target_id = models.CharField(max_length=80, blank=True, null=True)
     target_type = models.CharField(max_length=80, blank=True, null=True)
@@ -350,6 +380,8 @@ class AdminAuditLog(models.Model):
         data = {
             "admin_id": self.admin_id,
             "admin_email": self.admin_email,
+            "actor_type": self.actor_type or "admin",
+            "tenant_id": self.tenant_id,
             "action": self.action,
             "target_id": self.target_id,
             "target_type": self.target_type,

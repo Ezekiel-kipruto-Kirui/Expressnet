@@ -204,6 +204,8 @@ CACHES = {
 
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_TASK_PUBLISH_RETRY = False
+CELERY_BROKER_CONNECTION_TIMEOUT = 3
 CELERY_BEAT_SCHEDULE = {
     "expire-tenant-subscriptions-hourly": {
         "task": "billing_api.tasks.expire_tenant_subscriptions",
@@ -212,6 +214,10 @@ CELERY_BEAT_SCHEDULE = {
     "expire-customer-access-every-five-minutes": {
         "task": "billing_api.tasks.expire_customer_access",
         "schedule": 300.0,
+    },
+    "generate-expired-customer-invoices-every-ten-minutes": {
+        "task": "billing_api.tasks.generate_expired_customer_invoices",
+        "schedule": 600.0,
     },
     "notify-router-offline-every-five-minutes": {
         "task": "billing_api.tasks.notify_router_offline",

@@ -6,6 +6,7 @@ urlpatterns = [
     path("public/<str:tenant_id>/pay", views.public_pay),
     path("public/<str:tenant_id>/verify", views.public_verify),
     path("dashboard/stats", views.dashboard_stats),
+    path("audit/logs", views.tenant_audit_logs),
     path("customers", views.customers),
     path("customers/add", views.customer_add),
     path("customers/<str:customer_id>", views.customers),

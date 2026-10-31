@@ -1,39 +1,78 @@
-import { CheckCircle2, ExternalLink, PlugZap, Save, Send } from 'lucide-react';
+import { Check, ChevronRight, CreditCard, MessageCircle, PlugZap, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import adminApi from '../../api/adminAxios';
 
-const MASKED = '********';
+const initialState = {
+  notification_provider: 'slek',
+  collection_provider: 'daraja',
+  apiwap_configured: false,
+  slek_configured: false,
+  paystack_configured: false,
+  paystack_currency: 'KES',
+};
+
+const providerOptions = {
+  payments: [
+    { id: 'daraja', name: 'Daraja', region: 'M-Pesa', description: 'Accept customer payments through Safaricom Daraja.' },
+    { id: 'paystack', name: 'Paystack', region: 'Global', description: 'Accept card and supported local payment methods through Paystack.' },
+  ],
+  communications: [
+    { id: 'apiwap', name: 'ApiWap', region: 'WhatsApp', description: 'Send WhatsApp messages through the ApiWap gateway.' },
+    { id: 'slek', name: 'Slek', region: 'WhatsApp', description: 'Send WhatsApp messages through the Slek gateway.' },
+  ],
+};
+
+function ProviderDialog({ kind, selected, configured, currency, saving, onSelect, onClose, onSave }) {
+  const isPayments = kind === 'payments';
+  const options = providerOptions[kind];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section role="dialog" aria-modal="true" aria-labelledby="integration-dialog-title" className="admin-card w-full max-w-lg overflow-hidden rounded-2xl border shadow-2xl">
+        <header className="flex items-start justify-between border-b border-slate-200/70 px-5 py-4"><div><p className="admin-accent-label text-[10px] font-bold uppercase tracking-[0.16em]">Integration setup</p><h2 id="integration-dialog-title" className="admin-heading mt-1 text-base font-bold">Choose {isPayments ? 'payment provider' : 'communication provider'}</h2><p className="admin-muted mt-1 text-xs">Provider credentials and endpoints are managed by the platform environment.</p></div><button type="button" onClick={onClose} aria-label="Close dialog" className="admin-muted rounded-lg p-2 hover:bg-slate-100"><X size={18} /></button></header>
+        <div className="space-y-3 p-5">{options.map((option) => {
+          const active = selected === option.id;
+          const ready = configured[option.id];
+          return <button key={option.id} type="button" onClick={() => onSelect(option.id)} className={`admin-provider-option flex w-full items-center gap-3 rounded-xl border p-4 text-left transition ${active ? 'is-selected' : ''}`}>
+            <span className={`admin-provider-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${active ? 'is-selected' : ''}`}>{isPayments ? <CreditCard size={20} /> : <MessageCircle size={20} />}</span>
+            <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="admin-heading text-sm font-semibold">{option.name}</span><span className="admin-muted text-[10px]">{option.region}</span></span><span className="admin-muted mt-1 block text-xs">{option.description}</span><span className={`mt-2 inline-flex rounded-full px-2 py-1 text-[9px] font-semibold ${ready ? 'bg-emerald-500/15 text-emerald-500' : 'bg-slate-500/15 text-slate-400'}`}>{ready ? 'Environment configured' : 'Check environment config'}</span>{isPayments && option.id === 'paystack' && active && <span className="admin-muted mt-2 block text-[10px]">Configured currency: {currency || 'KES'}</span>}</span>
+            <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${active ? 'admin-provider-check' : 'border-slate-400/50'}`}>{active && <Check size={13} />}</span>
+          </button>;
+        })}</div>
+        <footer className="flex justify-end gap-2 border-t border-slate-200/70 px-5 py-4"><button type="button" onClick={onClose} className="admin-muted rounded-lg px-4 py-2 text-xs font-semibold hover:bg-slate-500/10">Cancel</button><button type="button" onClick={onSave} disabled={saving} className="admin-primary rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-60">{saving ? 'Saving…' : 'Save selection'}</button></footer>
+      </section>
+    </div>
+  );
+}
+
+function IntegrationCard({ title, description, provider, region, icon: Icon, onClick }) {
+  return <button type="button" onClick={onClick} className="admin-integration-card group rounded-2xl border p-5 text-left transition duration-200 hover:-translate-y-0.5 hover:shadow-xl">
+    <div className="flex items-start gap-3"><span className="admin-integration-icon flex h-11 w-11 items-center justify-center rounded-xl"><Icon size={20} /></span><span className="min-w-0 flex-1"><span className="admin-heading block text-sm font-semibold">{title}</span><span className="admin-muted mt-1 block text-xs">{description}</span></span><span className="admin-provider-check flex h-6 w-6 items-center justify-center rounded-full"><Check size={13} /></span></div>
+    <div className="mt-5 flex items-center justify-between"><span className="admin-accent-text text-xs font-semibold">Configure <ChevronRight size={14} className="ml-1 inline" /></span><span className="admin-muted rounded-full bg-slate-500/10 px-2.5 py-1 text-[10px] font-medium">{provider} · {region}</span></div>
+  </button>;
+}
 
 export default function AdminIntegrations() {
-  const [form, setForm] = useState({
-    notification_provider: 'slek',
-    collection_provider: 'daraja',
-    paystack_secret_key: '',
-    paystack_currency: 'KES',
-    whatsapp_enabled: true,
-    apiwap_base_url: 'https://api.apiwap.com/api/v1',
-    apiwap_api_key: '',
-    test_phone: '',
-  });
+  const [settings, setSettings] = useState(initialState);
+  const [draft, setDraft] = useState(initialState);
+  const [dialog, setDialog] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
 
   async function load() {
     setLoading(true);
     try {
       const { data } = await adminApi.get('/admin/integrations');
-      setForm((current) => ({
-        ...current,
+      const next = {
         notification_provider: data.notification_provider || 'slek',
         collection_provider: data.collection_provider || 'daraja',
-        paystack_secret_key: data.has_paystack_secret_key ? MASKED : '',
+        apiwap_configured: Boolean(data.apiwap_configured ?? data.has_apiwap_api_key),
+        slek_configured: Boolean(data.slek_configured),
+        paystack_configured: Boolean(data.has_paystack_secret_key),
         paystack_currency: data.paystack_currency || 'KES',
-        whatsapp_enabled: data.whatsapp_enabled !== false,
-        apiwap_base_url: data.apiwap_base_url || 'https://api.apiwap.com/api/v1',
-        apiwap_api_key: data.has_apiwap_api_key ? MASKED : '',
-      }));
+      };
+      setSettings(next);
+      setDraft(next);
     } catch (error) {
       toast.error(error.response?.data?.error || error.response?.data?.message || 'Failed to load integrations');
     } finally {
@@ -41,139 +80,40 @@ export default function AdminIntegrations() {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const update = (event) => {
-    const { name, type, checked, value } = event.target;
-    setForm((current) => ({ ...current, [name]: type === 'checkbox' ? checked : value }));
-  };
+  useEffect(() => { load(); }, []);
 
   const save = async () => {
     setSaving(true);
     try {
-      const { data } = await adminApi.patch('/admin/integrations', form);
-      toast.success(data.message || 'Integration settings saved');
-      setForm((current) => ({ ...current, apiwap_api_key: data.has_apiwap_api_key ? MASKED : '', paystack_secret_key: data.has_paystack_secret_key ? MASKED : '' }));
+      const { data } = await adminApi.patch('/admin/integrations', {
+        notification_provider: draft.notification_provider,
+        collection_provider: draft.collection_provider,
+      });
+      const next = { ...draft, paystack_configured: Boolean(data.has_paystack_secret_key), paystack_currency: data.paystack_currency || draft.paystack_currency };
+      setSettings(next);
+      setDraft(next);
+      toast.success(data.message || 'Integration provider saved');
+      setDialog(null);
     } catch (error) {
-      toast.error(error.response?.data?.error || error.response?.data?.message || 'Failed to save integrations');
+      toast.error(error.response?.data?.error || error.response?.data?.message || 'Failed to save integration provider');
     } finally {
       setSaving(false);
     }
   };
 
-  const test = async () => {
-    if (!form.test_phone.trim()) {
-      toast.error('Enter a phone number for the test');
-      return;
-    }
-    setTesting(true);
-    try {
-      const { data } = await adminApi.post('/admin/integrations', {
-        provider: form.notification_provider,
-        phone: form.test_phone,
-        apiwap_base_url: form.apiwap_base_url,
-        apiwap_api_key: form.apiwap_api_key,
-        message: 'ApiWap test notification from Expressnet admin.',
-      });
-      toast.success(data.message || 'Integration test sent');
-    } catch (error) {
-      toast.error(error.response?.data?.error || error.response?.data?.message || 'Integration test failed');
-    } finally {
-      setTesting(false);
-    }
-  };
+  if (loading) return <div className="grid gap-4 sm:grid-cols-2"><div className="h-32 animate-pulse rounded-2xl bg-white/5" /><div className="h-32 animate-pulse rounded-2xl bg-white/5" /></div>;
 
-  if (loading) return <p className="text-xs text-slate-600">Loading integrations...</p>;
+  const paymentName = settings.collection_provider === 'paystack' ? 'Paystack' : 'Daraja';
+  const communicationName = settings.notification_provider === 'apiwap' ? 'ApiWap' : 'Slek';
+  const configuration = { daraja: true, paystack: settings.paystack_configured, apiwap: settings.apiwap_configured, slek: settings.slek_configured };
 
-  const connected = form.apiwap_api_key === MASKED;
-  const paystackConnected = form.paystack_secret_key === MASKED;
-
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="page-title">Integrations</h1>
-          <p className="page-subtitle">Manage platform integrations and notification providers.</p>
-        </div>
-        <button type="button" className="btn-primary" onClick={save} disabled={saving}>
-          <Save size={16} />
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
-      </div>
-
-      <section className="theme-card rounded-lg border p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="theme-text flex items-center gap-2 text-sm font-semibold"><PlugZap size={17} /> WhatsApp Provider</h2>
-          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${connected ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
-            {connected ? 'ApiWap key saved' : 'ApiWap not configured'}
-          </span>
-        </div>
-
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <label className="form-label">Provider
-            <select name="notification_provider" className="form-input" value={form.notification_provider} onChange={update}>
-              <option value="slek">Slek</option>
-              <option value="apiwap">ApiWap</option>
-            </select>
-          </label>
-          <label className="form-label">ApiWap base URL
-            <input name="apiwap_base_url" className="form-input" value={form.apiwap_base_url} onChange={update} />
-          </label>
-          <label className="form-label md:col-span-2">ApiWap API key
-            <input name="apiwap_api_key" type="password" className="form-input" value={form.apiwap_api_key} onChange={update} placeholder="Paste ApiWap API key" autoComplete="off" />
-          </label>
-          <label className="flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-700 md:col-span-2">
-            <input type="checkbox" name="whatsapp_enabled" checked={form.whatsapp_enabled} onChange={update} />
-            Enable WhatsApp notifications platform-wide
-          </label>
-        </div>
-
-        <div className="mt-4 flex flex-col gap-3 rounded-md border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-end">
-          <label className="form-label flex-1">Test phone number
-            <input name="test_phone" className="form-input" value={form.test_phone} onChange={update} placeholder="2547XXXXXXXX" />
-          </label>
-          <button type="button" className="btn-secondary justify-center" onClick={test} disabled={testing}>
-            <Send size={15} />
-            {testing ? 'Testing...' : 'Test'}
-          </button>
-          <a href="https://account.apiwap.com/register" target="_blank" rel="noreferrer" className="btn-secondary justify-center text-violet-600">
-            <ExternalLink size={15} />
-            Get API Key
-          </a>
-        </div>
-
-        <p className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-          <CheckCircle2 size={14} className={connected ? 'text-emerald-500' : 'text-slate-400'} />
-          ApiWap is used when the provider is set to ApiWap and an API key is saved.
-        </p>
-      </section>
-
-      <section className="theme-card rounded-lg border p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="theme-text flex items-center gap-2 text-sm font-semibold"><PlugZap size={17} /> Customer Payment Collection</h2>
-          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${form.collection_provider === 'paystack' ? (paystackConnected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700') : 'bg-slate-100 text-slate-600'}`}>
-            {form.collection_provider === 'paystack' ? (paystackConnected ? 'Paystack configured' : 'Paystack key required') : 'Daraja selected'}
-          </span>
-        </div>
-        <p className="mt-2 text-xs text-slate-500">Choose the provider used for customer checkout across tenant portals. A Paystack subaccount can be configured per tenant for direct settlement.</p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <label className="form-label">Collection provider
-            <select name="collection_provider" className="form-input" value={form.collection_provider} onChange={update}>
-              <option value="daraja">Daraja (M-Pesa)</option>
-              <option value="paystack">Paystack</option>
-            </select>
-          </label>
-          <label className="form-label">Paystack currency
-            <input name="paystack_currency" className="form-input" value={form.paystack_currency} onChange={update} maxLength={10} />
-          </label>
-          <label className="form-label md:col-span-2">Paystack secret key
-            <input name="paystack_secret_key" type="password" className="form-input" value={form.paystack_secret_key} onChange={update} placeholder="sk_test_… or sk_live_…" autoComplete="new-password" />
-          </label>
-        </div>
-        <p className="mt-3 text-xs text-slate-500">Set webhook URL in Paystack to <code>{window.location.origin}/api/paystack/webhook</code>. Keep the secret key private; it is never returned by the API.</p>
-      </section>
-    </div>
-  );
+  return <div className="space-y-6">
+    <div><p className="admin-accent-label text-[10px] font-bold uppercase tracking-[0.18em]">Platform services</p><h2 className="admin-heading mt-1 text-2xl font-bold tracking-tight">Integrations</h2><p className="admin-muted mt-1 text-sm">Choose which platform providers handle payments and communications.</p></div>
+    <section><div className="mb-3"><h3 className="admin-heading text-sm font-bold">Core integrations</h3><p className="admin-muted mt-1 text-xs">Select a provider to view or change the active integration.</p></div><div className="grid gap-4 md:grid-cols-2">
+      <IntegrationCard title="Customer payments" description="Payment collection across customer checkout." provider={paymentName} region={settings.collection_provider === 'daraja' ? 'M-Pesa' : (settings.paystack_currency || 'Global')} icon={CreditCard} onClick={() => { setDraft(settings); setDialog('payments'); }} />
+      <IntegrationCard title="Customer communications" description="WhatsApp messages sent by platform workflows." provider={communicationName} region="WhatsApp" icon={MessageCircle} onClick={() => { setDraft(settings); setDialog('communications'); }} />
+    </div></section>
+    <p className="admin-muted text-xs">Provider keys and API endpoints are read from the server environment. This page only selects the active provider.</p>
+    {dialog && <ProviderDialog kind={dialog} selected={dialog === 'payments' ? draft.collection_provider : draft.notification_provider} configured={configuration} currency={settings.paystack_currency} saving={saving} onSelect={(id) => setDraft((current) => ({ ...current, [dialog === 'payments' ? 'collection_provider' : 'notification_provider']: id }))} onClose={() => setDialog(null)} onSave={save} />}
+  </div>;
 }

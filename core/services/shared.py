@@ -223,6 +223,19 @@ def check_password(password, hashed):
         return False
 
 
+def make_payment_access_token(tenant_id, payment_id):
+    digest = hmac.new(
+        settings.SECRET_KEY.encode(),
+        f"payment-access:{tenant_id}:{payment_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return digest[:32]
+
+
+def verify_payment_access_token(tenant_id, payment_id, token):
+    return hmac.compare_digest(make_payment_access_token(tenant_id, payment_id), str(token or ""))
+
+
 def _get_jwt_secret(name):
     value = os.getenv(name, "")
     if not value:
@@ -325,11 +338,13 @@ def get_public_base_url():
 
 
 
-def write_audit_log(admin_id=None, admin_email=None, action=None, target_id=None, target_type=None, request=None, metadata=None):
+def write_audit_log(admin_id=None, admin_email=None, action=None, target_id=None, target_type=None, request=None, metadata=None, actor_type="admin", tenant_id=None):
     ref("admin_audit_logs").push(
         {
             "admin_id": admin_id,
             "admin_email": admin_email,
+            "actor_type": actor_type,
+            "tenant_id": str(tenant_id) if tenant_id is not None else None,
             "action": action,
             "target_id": target_id,
             "target_type": target_type,

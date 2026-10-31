@@ -120,15 +120,6 @@ def sanitize_router_login_url(value):
     return raw
 
 
-def make_payment_access_token(tenant_id, payment_id):
-    digest = hmac.new(
-        settings.SECRET_KEY.encode(),
-        f"payment-access:{tenant_id}:{payment_id}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    return digest[:32]
-
-
 DEFAULT_SITE = {
     "brand_name": "Expressnetbilling",
     "headline": "Internet billing built for hotspot businesses",
@@ -548,10 +539,10 @@ def tenant_theme_payload(tenant):
         "bank_name": tenant.get("bank_name") or "",
         "bank_account_number": tenant.get("bank_account_number") or "",
         "payment_methods": tenant.get("payment_methods") if isinstance(tenant.get("payment_methods"), list) else ["bank"],
-        "daraja_consumer_key": tenant.get("daraja_consumer_key") or "",
-        "daraja_consumer_secret": tenant.get("daraja_consumer_secret") or "",
+        "has_daraja_consumer_key": bool(tenant.get("daraja_consumer_key")),
+        "has_daraja_consumer_secret": bool(tenant.get("daraja_consumer_secret")),
         "daraja_shortcode": tenant.get("daraja_shortcode") or "",
-        "daraja_passkey": tenant.get("daraja_passkey") or "",
+        "has_daraja_passkey": bool(tenant.get("daraja_passkey")),
         "daraja_till_number": tenant.get("daraja_till_number") or "",
         "daraja_shortcode_type": tenant.get("daraja_shortcode_type") or "CustomerBuyGoodsOnline",
         "daraja_environment": tenant.get("daraja_environment") or "production",
@@ -1249,6 +1240,7 @@ def captive_portal_page(request, tenant_id):
         </form>
         <form class="row" method="post" action="/api/public/{html.escape(str(tenant_id))}/redeem">
           {hidden}
+          <input name="phone" required inputmode="tel" placeholder="Phone number used to pay">
           <input name="receipt_code" required placeholder="M-Pesa code"{voucher_autocomplete}>
           <button class="secondary" type="submit">Connect</button>
         </form>
@@ -1415,6 +1407,7 @@ def captive_portal_page(request, tenant_id):
         <p class="muted">Disconnected after paying? Enter your M-Pesa confirmation code.</p>
         <form method="post" action="/api/public/{html.escape(str(tenant_id))}/redeem">
           {hidden}
+          <input name="phone" required inputmode="tel" placeholder="Phone number used to pay">
           <input name="receipt_code" required placeholder="M-Pesa code e.g. RAB12C3D4E" autocomplete="one-time-code">
           <button type="submit">Sign in with M-Pesa code</button>
         </form>
@@ -1442,6 +1435,7 @@ def captive_portal_page(request, tenant_id):
         <p class="muted">Disconnected after paying? Enter your M-Pesa confirmation code.</p>
         <form method="post" action="/api/public/{html.escape(str(tenant_id))}/redeem">
           {hidden}
+          <input name="phone" required inputmode="tel" placeholder="Phone number used to pay">
           <input name="receipt_code" required placeholder="M-Pesa code e.g. RAB12C3D4E">
           <button type="submit">Sign in with M-Pesa code</button>
         </form>
@@ -1743,16 +1737,24 @@ def public_pay(request, tenant_id):
 def public_redeem(request, tenant_id):
     data = body(request)
     receipt_code = data.get("receipt_code") or data.get("payment_code")
+    verify_token = str(data.get("verify_token") or data.get("verifyToken") or "")
+    phone = normalize_phone(data.get("phone"))
     if not receipt_code:
         return ok({"message": "Payment reference is required"}, 400)
     payment = None
+    payment_id = ""
     for item in list_children(f"tenants/{tenant_id}/payments"):
         candidates = [item.get("payment_code"), item.get("daraja_receipt_number"), item.get("mpesa_receipt_number"), None]
         if any(str(candidate or "").upper() == str(receipt_code).strip().upper() for candidate in candidates):
             payment = item
+            payment_id = str(item.get("id") or "")
             break
     if not payment or payment.get("status") != "success":
         return ok({"message": "Paid transaction not found"}, 404)
+    token_valid = bool(payment_id and verify_token and verify_payment_access_token(tenant_id, payment_id, verify_token))
+    phone_valid = bool(phone and normalize_phone(payment.get("phone")) == phone)
+    if not token_valid and not phone_valid:
+        return ok({"message": "Invalid payment verification token"}, 403)
     if not payment.get("access_expires_at") or str(payment["access_expires_at"]) <= iso_now():
         return ok({"message": "This package has expired"}, 410)
     tenant = {"id": tenant_id, **(ref(f"tenants/{tenant_id}").get() or {})}

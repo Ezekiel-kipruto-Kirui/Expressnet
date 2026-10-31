@@ -70,6 +70,7 @@ function CustomerDetailField({ label, value }) {
 
 export default function Customers({ initialFilter = 'all', serviceLocked = null, title = 'Users' }) {
   const [customers, setCustomers] = useState([]);
+  const [customerMeta, setCustomerMeta] = useState({ count: 0, overall_count: 0, service_counts: {}, status_counts: {} });
   const [packages, setPackages] = useState([]);
   const [mikrotikRouters, setMikrotikRouters] = useState([]);
   const [staff, setStaff] = useState([]);
@@ -81,6 +82,7 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
   const [modalOpen, setModalOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState(initialFilter);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const [form, setForm] = useState(initialForm);
@@ -130,21 +132,19 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
     return packages.filter((pkg) => (pkg.service_type || 'hotspot') === selectedService);
   }, [form.service_type, packages, serviceLocked]);
 
-  const scopedCustomers = useMemo(() => {
-    if (!serviceLocked) return customers;
-    return customers.filter((customer) => serviceTypeOf(customer) === serviceLocked);
-  }, [customers, serviceLocked]);
+  const scopedCustomers = customers;
 
   const userStats = useMemo(() => {
-    const active = scopedCustomers.filter((customer) => customer.status === 'active').length;
-    const hotspot = scopedCustomers.filter((customer) => serviceTypeOf(customer) === 'hotspot').length;
-    const pppoe = scopedCustomers.filter((customer) => serviceTypeOf(customer) === 'pppoe').length;
-   
-    const staticUsers = scopedCustomers.filter((customer) => serviceTypeOf(customer) === 'static').length;
-    const paused = scopedCustomers.filter((customer) => ['paused', 'suspended', 'inactive'].includes(String(customer.status || '').toLowerCase())).length;
-    const offline = scopedCustomers.filter((customer) => ['offline', 'expired'].includes(String(customer.status || '').toLowerCase())).length;
+    const statuses = customerMeta.status_counts || {};
+    const services = customerMeta.service_counts || {};
+    const active = statuses.active || 0;
+    const hotspot = services.hotspot || 0;
+    const pppoe = services.pppoe || 0;
+    const staticUsers = services.static || 0;
+    const paused = (statuses.paused || 0) + (statuses.suspended || 0) + (statuses.inactive || 0);
+    const offline = (statuses.offline || 0) + (statuses.expired || 0);
     return {
-      total: scopedCustomers.length,
+      total: customerMeta.overall_count || customerMeta.count || 0,
       active,
       inactive: scopedCustomers.length - active,
       hotspot,
@@ -153,31 +153,11 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
       paused,
       offline,
     };
-  }, [scopedCustomers]);
+  }, [customerMeta]);
 
   const filteredCustomers = useMemo(() => {
-    return scopedCustomers.filter((customer) => {
-      const isActive = customer.status === 'active';
-      const serviceType = serviceTypeOf(customer);
-      if (statusFilter === 'active' && !isActive) return false;
-      if (statusFilter === 'inactive' && isActive) return false;
-      if (statusFilter === 'hotspot' && serviceType !== 'hotspot') return false;
-      if (statusFilter === 'pppoe' && serviceType !== 'pppoe') return false;
-      if (statusFilter === 'static' && serviceType !== 'static') return false;
-      if (statusFilter === 'paused' && !['paused', 'suspended', 'inactive'].includes(String(customer.status || '').toLowerCase())) return false;
-      if (statusFilter === 'offline' && !['offline', 'expired'].includes(String(customer.status || '').toLowerCase())) return false;
-      const haystack = [
-        customer.name,
-        customer.phone,
-        isHotspotOnlyPage ? '' : customer.location,
-        customer.username,
-        customer.package,
-        customer.ip_address,
-        isHotspotOnlyPage ? '' : customer.technician,
-      ].join(' ').toLowerCase();
-      return haystack.includes(search.toLowerCase());
-    });
-  }, [isHotspotOnlyPage, scopedCustomers, search, statusFilter]);
+    return customers;
+  }, [customers]);
 
   const userFilterTabs = useMemo(() => ([
     ['all', 'All', userStats.total, Users],
@@ -191,7 +171,7 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
   ].filter(([key]) => !serviceLocked || ['all', serviceLocked, 'paused', 'offline'].includes(key))), [serviceLocked, userStats]);
 
   const filteredCustomerIds = useMemo(() => filteredCustomers.map((customer) => customer.id), [filteredCustomers]);
-  const pagedCustomers = useMemo(() => filteredCustomers.slice((page - 1) * pageSize, page * pageSize), [filteredCustomers, page]);
+  const pagedCustomers = filteredCustomers;
   const selectedVisibleIds = selectedCustomerIds.filter((id) => filteredCustomerIds.includes(id));
   const allVisibleSelected = filteredCustomerIds.length > 0 && selectedVisibleIds.length === filteredCustomerIds.length;
   const tableColSpan = (isHotspotOnlyPage ? 10 : 13) + 1;
@@ -205,18 +185,38 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
   }, [search, statusFilter, serviceLocked]);
 
   useEffect(() => {
-    setPage((current) => Math.min(current, Math.max(1, Math.ceil(filteredCustomers.length / pageSize))));
-  }, [filteredCustomers.length]);
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil((customerMeta.count || 0) / pageSize))));
+  }, [customerMeta.count]);
+
+  async function reloadCustomers() {
+    const params = { page, page_size: pageSize };
+    if (serviceLocked) params.service_type = serviceLocked;
+    else if (['hotspot', 'pppoe', 'static'].includes(statusFilter)) params.service_type = statusFilter;
+    if (['active', 'inactive', 'paused', 'offline'].includes(statusFilter)) params.status = statusFilter;
+    if (debouncedSearch.trim()) params.search = debouncedSearch.trim();
+    setLoading(true);
+    try {
+      const { data } = await api.get('/customers', { params });
+      setCustomers(data.results || []);
+      setCustomerMeta({ count: data.count || 0, overall_count: data.overall_count || 0, service_counts: data.service_counts || {}, status_counts: data.status_counts || {} });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
     try {
-      const [customerRes, packageRes, mikrotikRes] = await Promise.all([
-        api.get('/customers?all=1'),
+      const [packageRes, mikrotikRes] = await Promise.all([
         api.get('/packages?all=1'),
         api.get('/settings/mikrotik'),
       ]);
-      setCustomers(Array.isArray(customerRes.data) ? customerRes.data : customerRes.data.results || []);
+      await reloadCustomers();
       setPackages(Array.isArray(packageRes.data) ? packageRes.data : packageRes.data.results || []);
       const linkedRouters = mikrotikRes.data?.linked_routers || {};
       setMikrotikRouters(Object.entries(linkedRouters).map(([id, router]) => ({
@@ -231,7 +231,7 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
         setStaff([]);
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to load customers');
+      toast.error(error.response?.data?.message || 'Failed to load customer data');
     } finally {
       setLoading(false);
     }
@@ -240,6 +240,10 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    reloadCustomers().catch((error) => toast.error(error.response?.data?.message || 'Failed to load customers'));
+  }, [page, debouncedSearch, statusFilter, serviceLocked]);
 
   const toggleCustomerSelection = (customerId) => {
     setSelectedCustomerIds((current) => (
@@ -476,17 +480,32 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
     }
   };
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     const headers = isHotspotOnlyPage
       ? ['name', 'phone', 'username', 'password', 'package', 'service_type', 'mikrotik_router_id', 'status', 'expiry_date']
       : ['name', 'phone', 'location', 'username', 'password', 'amount_payable', 'package', 'service_type', 'technician', 'router_serial_number', 'mikrotik_router_id', 'status', 'expiry_date'];
-    const csv = [headers.join(','), ...filteredCustomers.map((item) => headers.map((key) => JSON.stringify(item[key] ?? '')).join(','))].join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'users.csv';
-    link.click();
-    URL.revokeObjectURL(url);
+    try {
+      const params = { page: 1, page_size: 200 };
+      if (serviceLocked) params.service_type = serviceLocked;
+      else if (['hotspot', 'pppoe', 'static'].includes(statusFilter)) params.service_type = statusFilter;
+      if (['active', 'inactive', 'paused', 'offline'].includes(statusFilter)) params.status = statusFilter;
+      if (search.trim()) params.search = search.trim();
+      const first = await api.get('/customers', { params });
+      const rows = [...(first.data.results || [])];
+      for (let currentPage = 2; currentPage <= (first.data.pages || 1); currentPage += 1) {
+        const { data } = await api.get('/customers', { params: { ...params, page: currentPage } });
+        rows.push(...(data.results || []));
+      }
+      const csv = [headers.join(','), ...rows.map((item) => headers.map((key) => JSON.stringify(item[key] ?? '')).join(','))].join('\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'users.csv';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to export customers');
+    }
   };
 
   const expiryClass = (value) => {
@@ -734,7 +753,7 @@ export default function Customers({ initialFilter = 'all', serviceLocked = null,
           </tbody>
         </table>
       </div>
-      <Pagination page={page} pageSize={pageSize} total={filteredCustomers.length} label="customers" onPageChange={setPage} />
+      <Pagination page={page} pageSize={pageSize} total={customerMeta.count} label="customers" onPageChange={setPage} />
 
       {openActionsId && actionsPosition && openCustomer && createPortal(
         <div

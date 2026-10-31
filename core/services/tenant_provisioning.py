@@ -1,7 +1,9 @@
 from django.conf import settings
 from django.db import transaction
 from django.utils.text import slugify
+from django.db.models.functions import Lower, Trim
 
+from billing_api.models import Tenant as BillingTenant
 from core.models import Domain, Tenant
 
 
@@ -15,6 +17,12 @@ def create_tenant(*, business_name, email, slug=None, owner_name="", phone="", p
     tenant_slug = slugify(slug or business_name)
     if not tenant_slug:
         raise ValueError("A tenant slug or business name is required.")
+    normalized_name = str(business_name or "").strip().lower()
+    if not normalized_name:
+        raise ValueError("A business name is required.")
+    if (Tenant.objects.annotate(normalized=Lower(Trim("business_name"))).filter(normalized=normalized_name).exists()
+            or BillingTenant.objects.annotate(normalized=Lower(Trim("business_name"))).filter(normalized=normalized_name).exists()):
+        raise ValueError("A business with this name already exists.")
 
     tenant = Tenant.objects.create(
         schema_name=schema_name_for_slug(tenant_slug),

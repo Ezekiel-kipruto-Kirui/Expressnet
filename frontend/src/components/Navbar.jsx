@@ -12,7 +12,7 @@ export default function Navbar({ onMenuClick }) {
   };
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 px-4 lg:px-8">
+    <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 lg:px-8 dark:bg-[var(--app-panel)]" style={{ backgroundColor: 'var(--app-panel)' }}>
       <div className="flex items-center gap-3">
         <button
           type="button"

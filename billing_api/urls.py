@@ -12,6 +12,7 @@ admin_urlpatterns = [
     path("tenants/", core_views.admin_tenants),
     path("tenants/stats/summary", core_views.admin_stats),
     path("system/stats", core_views.admin_system_stats),
+    path("system/metrics", core_views.admin_system_metrics),
     path("communications", core_views.admin_communications),
     path("integrations", core_views.admin_integrations),
     path("system", core_views.admin_system),
@@ -133,5 +134,7 @@ urlpatterns = [
     path("portal/<str:tenant_id>", management_views.portal_payment_return),
     path("daraja/b2c/result", management_views.daraja_b2c_result),
     path("daraja/b2c/timeout", management_views.daraja_b2c_timeout),
+    path("daraja/b2b/result", management_views.daraja_b2b_result),
+    path("daraja/b2b/timeout", management_views.daraja_b2b_timeout),
     path(f"{settings.ADMIN_API_PATH}/", include(admin_urlpatterns)),
 ]

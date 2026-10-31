@@ -7,6 +7,7 @@ from core.api.v1 import views
 urlpatterns = [
     path("health", views.health),
     path("auth/register", views.auth_register),
+    path("auth/verify-email", views.auth_verify_email),
     path("auth/login", views.auth_login),
     path("public/site", views.public_site),
     path("public/stats", views.public_stats),
@@ -15,6 +16,7 @@ urlpatterns = [
     path(f"{settings.ADMIN_API_PATH}/tenants", views.admin_tenants),
     path(f"{settings.ADMIN_API_PATH}/tenants/stats/summary", views.admin_stats),
     path(f"{settings.ADMIN_API_PATH}/system/stats", views.admin_system_stats),
+    path(f"{settings.ADMIN_API_PATH}/system/metrics", views.admin_system_metrics),
     path(f"{settings.ADMIN_API_PATH}/communications", views.admin_communications),
     path(f"{settings.ADMIN_API_PATH}/integrations", views.admin_integrations),
     path(f"{settings.ADMIN_API_PATH}/system", views.admin_system),

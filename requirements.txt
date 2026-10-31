@@ -10,6 +10,7 @@ dj-database-url==3.0.1
 psycopg2-binary==2.9.10
 django-redis==6.0.0
 redis==5.2.1
+psutil>=5.9,<8
 celery[redis]==5.4.0
 gevent==24.11.1
 whitenoise==6.8.2

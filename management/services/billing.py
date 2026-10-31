@@ -466,8 +466,29 @@ def tenant_payout_details(tenant):
         "bank_code": str(tenant.get("bank_code") or "").strip(),
         "bank_name": str(tenant.get("bank_name") or "").strip(),
         "bank_account_number": str(tenant.get("bank_account_number") or "").strip(),
+        "bank_daraja_shortcode": str(tenant.get("bank_daraja_shortcode") or "").strip(),
+        "daraja_settlement_till_number": str(tenant.get("daraja_settlement_till_number") or "").strip(),
+        "settlement_destination_type": str(tenant.get("settlement_destination_type") or ("till" if tenant.get("daraja_settlement_till_number") else "bank")).strip().lower(),
         "payout_phone": str(tenant.get("payout_phone") or tenant.get("phone") or "").strip(),
     }
+
+
+def daraja_b2b_settlement_status(tenant):
+    tenant = tenant or {}
+    payout = tenant_payout_details(tenant)
+    if payout["settlement_destination_type"] == "till":
+        has_destination = bool(payout["daraja_settlement_till_number"])
+    else:
+        has_destination = bool(payout["bank_daraja_shortcode"] and payout["bank_account_number"])
+    if not has_destination:
+        return "missing_b2b_destination"
+    has_b2b_credentials = bool(
+        os.getenv("DARAJA_B2B_SHORTCODE")
+        and os.getenv("DARAJA_B2B_INITIATOR_NAME")
+        and os.getenv("DARAJA_B2B_SECURITY_CREDENTIAL")
+        and daraja_is_configured(_clean_daraja_config(_platform_only_daraja_config()), "daraja_paybill")
+    )
+    return "withdrawal_ready" if has_b2b_credentials else "missing_b2b_credentials"
 
 
 def daraja_is_configured(tenant, payment_method=None):
@@ -866,6 +887,74 @@ def initiate_daraja_b2c(tenant, payment_id, amount, phone, remarks=None):
             data.get("ResponseDescription") or data.get("errorMessage") or f"Daraja B2C rejected request: {data}",
             502,
         )
+    return data
+
+
+def initiate_daraja_b2b_settlement(tenant, payment_id, amount, destination_type, recipient_shortcode, account_number="", remarks=None, originator_id=None):
+    """Send a tenant settlement to a bank Paybill/account or a Buy Goods till."""
+    tenant_id = (tenant or {}).get("id")
+    tenant = {**_clean_daraja_config(_platform_only_daraja_config()), "id": tenant_id}
+    shortcode = str(os.getenv("DARAJA_B2B_SHORTCODE") or "").strip()
+    initiator = str(os.getenv("DARAJA_B2B_INITIATOR_NAME") or "").strip()
+    security_credential = str(os.getenv("DARAJA_B2B_SECURITY_CREDENTIAL") or "").strip()
+    recipient_shortcode = "".join(ch for ch in str(recipient_shortcode or "") if ch.isdigit())
+    account_reference = str(account_number or "").strip()
+    destination_type = "till" if str(destination_type or "").strip().lower() == "till" else "bank"
+    if not all((shortcode, initiator, security_credential, recipient_shortcode)):
+        raise PaymentProviderError(
+            "B2B settlement is not fully configured.",
+            "B2B requires a sender shortcode, B2B initiator credentials, and a receiving bank Paybill shortcode or Buy Goods till",
+            503,
+        )
+    if len(shortcode) < 5 or len(shortcode) > 10 or len(recipient_shortcode) < 5 or len(recipient_shortcode) > 10 or (destination_type == "bank" and not account_reference):
+        raise PaymentProviderError("The B2B settlement destination is invalid.", "Invalid recipient shortcode or bank account reference", 400)
+
+    base_url = get_public_base_url()
+    if not base_url:
+        raise RuntimeError("PUBLIC_APP_URL or DARAJA_CALLBACK_BASE_URL is required for Daraja B2B callbacks")
+
+    token = get_daraja_access_token(tenant)
+    originator_id = str(originator_id or f"SET{secrets.token_hex(14).upper()}")
+    is_till = destination_type == "till"
+    payload = {
+        "Initiator": initiator,
+        "SecurityCredential": security_credential,
+        "CommandID": "BusinessBuyGoods" if is_till else "BusinessPayBill",
+        "SenderIdentifierType": str(os.getenv("DARAJA_B2B_SENDER_IDENTIFIER_TYPE") or "4"),
+        "RecieverIdentifierType": str(os.getenv("DARAJA_B2B_TILL_IDENTIFIER_TYPE") or "2") if is_till else str(os.getenv("DARAJA_B2B_RECEIVER_IDENTIFIER_TYPE") or "4"),
+        "Amount": max(1, int(round(float(amount or 0)))),
+        "PartyA": shortcode,
+        "PartyB": recipient_shortcode,
+        "AccountReference": account_reference if not is_till else "",
+        "Remarks": str(remarks or f"Tenant settlement {payment_id}")[:100],
+        "QueueTimeOutURL": f"{base_url}/api/daraja/b2b/timeout",
+        "ResultURL": f"{base_url}/api/daraja/b2b/result",
+        "OriginatorConversationID": originator_id,
+    }
+    if is_till:
+        payload.pop("AccountReference", None)
+    response = requests.post(
+        f"{daraja_base_url(tenant)}/mpesa/b2b/v1/paymentrequest",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    try:
+        response.raise_for_status()
+        data = response.json()
+    except (requests.HTTPError, ValueError) as exc:
+        raise PaymentProviderError(
+            "B2B settlement could not be requested.",
+            f"Daraja B2B request failed ({response.status_code}): {response.text[:500]}",
+            502,
+        ) from exc
+    if str(data.get("ResponseCode")) not in {"0", "00"}:
+        raise PaymentProviderError(
+            "B2B settlement could not be requested.",
+            data.get("ResponseDescription") or data.get("errorMessage") or f"Daraja B2B rejected request: {data}",
+            502,
+        )
+    data.setdefault("OriginatorConversationID", originator_id)
     return data
 
 

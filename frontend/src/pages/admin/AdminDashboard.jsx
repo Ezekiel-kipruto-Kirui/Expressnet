@@ -2,14 +2,14 @@ import {
   AlertTriangle,
   ArrowRight,
   BellRing,
-  CalendarDays,
   CheckCircle2,
-  ChevronDown,
+  Cpu,
   Database,
+  HardDrive,
+  MemoryStick,
   Radio,
-  Search,
+  RefreshCw,
   Server,
-  TrendingUp,
   Users,
   WalletCards,
   Wifi,
@@ -42,13 +42,6 @@ function formatDateTime(value) {
   return value ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
 }
 
-function formatMonthRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return `${formatDateShort(start)} - ${formatDate(end)}`;
-}
-
 function getTenantRevenue(tenant) {
   return tenant.subscription?.amount || tenant.subscription?.price || tenant.monthly_revenue || tenant.revenue || 0;
 }
@@ -67,9 +60,9 @@ function tenantInitials(name) {
 
 function Panel({ title, action, children, className = '' }) {
   return (
-    <section className={`theme-card overflow-hidden rounded-lg border shadow-sm ${className}`}>
+    <section className={`theme-card overflow-hidden rounded-2xl border shadow-[0_12px_36px_rgba(15,23,42,0.045)] ${className}`}>
       <div className="flex items-center justify-between px-5 py-4">
-        <h2 className="theme-text text-sm font-semibold tracking-tight">{title}</h2>
+        <h2 className="admin-heading text-sm font-bold tracking-tight">{title}</h2>
         {action && <Link to={action.to} className="text-xs font-medium text-app-accent">{action.label}</Link>}
       </div>
       {children}
@@ -77,7 +70,7 @@ function Panel({ title, action, children, className = '' }) {
   );
 }
 
-function Sparkline({ color = '#2563eb', fill = '#dbeafe', points }) {
+function Sparkline({ color = 'var(--admin-accent)', fill = 'var(--admin-accent-soft)', points }) {
   if (!Array.isArray(points) || points.length < 2) return null;
   const max = Math.max(...points, 1);
   const min = Math.min(...points, 0);
@@ -103,20 +96,10 @@ function Sparkline({ color = '#2563eb', fill = '#dbeafe', points }) {
 }
 
 function MetricCard({ label, value, helper, icon: Icon, tone = 'blue', spark }) {
-  const tones = {
-    blue: ['bg-blue-100 text-blue-600', '#2563eb', '#dbeafe'],
-    green: ['bg-emerald-100 text-emerald-600', '#16a34a', '#dcfce7'],
-    purple: ['bg-violet-100 text-violet-600', '#7c3aed', '#ede9fe'],
-    cyan: ['bg-cyan-100 text-cyan-600', '#06b6d4', '#cffafe'],
-    orange: ['bg-orange-100 text-orange-600', '#f97316', '#ffedd5'],
-    rose: ['bg-rose-100 text-rose-600', '#e11d48', '#ffe4e6'],
-  };
-  const [iconTone, line, fill] = tones[tone];
-
   return (
-    <section className="theme-card rounded-lg border p-3.5 shadow-sm">
+    <section className="theme-card rounded-2xl border p-4 shadow-[0_12px_36px_rgba(15,23,42,0.045)] transition hover:-translate-y-0.5 hover:shadow-lg">
       <div className="flex items-start gap-4">
-        <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconTone}`}>
+        <div className="admin-accent-icon mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md">
           <Icon size={18} />
         </div>
         <div className="min-w-0 flex-1">
@@ -125,15 +108,14 @@ function MetricCard({ label, value, helper, icon: Icon, tone = 'blue', spark }) 
           {helper && <p className="theme-muted mt-2 text-xs font-normal">{helper}</p>}
         </div>
       </div>
-      <Sparkline color={line} fill={fill} points={spark} />
+      <Sparkline points={spark} />
     </section>
   );
 }
 
 function TenantAvatar({ tenant, index }) {
-  const colors = ['bg-blue-600', 'bg-orange-500', 'bg-cyan-500', 'bg-violet-600', 'bg-sky-500', 'bg-red-500'];
   return (
-    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${colors[index % colors.length]}`}>
+    <div className="admin-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
       {tenantInitials(tenant.business_name)}
     </div>
   );
@@ -151,13 +133,13 @@ function RevenueTrend({ chart }) {
       <div className="px-5 pb-5">
         <div className="relative h-[250px]">
           <div className="absolute inset-0 grid grid-rows-4 pl-1 text-xs font-medium text-blue-600">
-            {['250K', '150K', '50K', '0'].map((label) => <div key={label} className="border-t border-slate-100 pt-0.5">{label}</div>)}
+            {Array.from({ length: 4 }, (_, index) => formatCompactKES(max * (3 - index) / 3)).map((label, index) => <div key={`${index}-${label}`} className="border-t border-slate-100 pt-0.5">{label}</div>)}
           </div>
           <svg className="absolute left-12 top-2 h-[210px] w-[calc(100%-4rem)]" viewBox="0 0 620 210" preserveAspectRatio="none">
             <defs>
               <linearGradient id="trafficBlue" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="#2563eb" stopOpacity="0.23" />
-                <stop offset="100%" stopColor="#2563eb" stopOpacity="0.02" />
+                <stop offset="0%" stopColor="var(--admin-accent)" stopOpacity="0.23" />
+                <stop offset="100%" stopColor="var(--admin-accent)" stopOpacity="0.02" />
               </linearGradient>
               <linearGradient id="trafficGreen" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stopColor="#16a34a" stopOpacity="0.18" />
@@ -165,7 +147,7 @@ function RevenueTrend({ chart }) {
               </linearGradient>
             </defs>
             <polygon points={`0,210 ${points} 620,210`} fill="url(#trafficBlue)" />
-            <polyline points={points} fill="none" stroke="#2563eb" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+            <polyline points={points} fill="none" stroke="var(--admin-accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           <div className="absolute bottom-0 left-12 right-0 grid grid-cols-7 text-[11px] font-normal text-slate-500">
             {rows.filter((_, index) => index % Math.max(Math.floor(rows.length / 6), 1) === 0).slice(0, 7).map((item) => <span key={item.date}>{formatDateShort(item.date)}</span>)}
@@ -182,14 +164,12 @@ function PlatformHealth({ health }) {
     [Database, 'Database', health?.dbError || 'Primary database check', health?.db || 'unknown', health?.db === 'ok' ? 'green' : 'rose'],
     [Wifi, 'Redis', health?.redisError || 'Cache and queue broker check', health?.redis || 'unknown', health?.redis === 'ok' ? 'green' : 'rose'],
   ];
-  const iconTone = { green: 'bg-emerald-100 text-emerald-600', rose: 'bg-rose-100 text-rose-600' };
-
   return (
     <Panel title="Platform Health" action={{ to: adminPath('system'), label: 'View All' }}>
-      <div className="divide-y divide-slate-100 px-5 pb-4">
+          <div className="divide-y divide-slate-100 px-5 pb-4">
         {rows.map(([Icon, label, detail, status, tone]) => (
           <div key={label} className="flex items-center gap-4 py-4">
-            <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${iconTone[tone]}`}><Icon size={22} /></div>
+            <div className="admin-accent-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-full"><Icon size={22} /></div>
             <div className="min-w-0 flex-1">
               <p className="theme-text text-xs font-medium">{label}</p>
               <p className="theme-muted text-xs font-normal">{detail}</p>
@@ -220,7 +200,7 @@ function SystemPerformance({ stats }) {
         <div className="space-y-2">
           {services.map(([label, value]) => (
             <div key={label} className="flex h-9 items-center gap-3 rounded-md border border-slate-200 px-3">
-              <Server size={15} className="text-blue-600" />
+              <Server size={15} className="admin-accent-text" />
               <span className="theme-muted flex-1 text-xs font-normal">{label}</span>
               <span className="theme-text text-xs font-semibold">{value}</span>
             </div>
@@ -229,6 +209,18 @@ function SystemPerformance({ stats }) {
       </div>
     </Panel>
   );
+}
+
+function ResourcePerformance({ metrics, samples }) {
+  const resources = [
+    { label: 'CPU utilization', value: metrics?.cpu?.usagePercent, suffix: '%', icon: Cpu, field: (sample) => sample.cpu?.usagePercent, tone: 'blue' },
+    { label: 'Memory usage', value: metrics?.memory?.usagePercent, suffix: '%', icon: MemoryStick, field: (sample) => sample.memory?.usagePercent, tone: 'purple' },
+    { label: 'Disk usage', value: metrics?.disk?.usagePercent, suffix: '%', icon: HardDrive, field: (sample) => sample.disk?.usagePercent, tone: 'orange' },
+    { label: 'Database latency', value: metrics?.database?.latencyMs, suffix: ' ms', icon: Database, field: (sample) => sample.database?.latencyMs, tone: 'cyan' },
+  ];
+  return <Panel title="Live Server Resources" action={{ to: adminPath('system'), label: 'Open System Health' }} className="xl:col-span-4">
+    <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">{resources.map(({ label, value, suffix, icon, field, tone }) => <MetricCard key={label} label={label} value={value == null ? '—' : `${Number(value).toFixed(1)}${suffix}`} helper="Live application host sample" icon={icon} tone={tone} spark={samples.map(field).filter((item) => item != null)} />)}</div>
+  </Panel>;
 }
 
 function RecentTenants({ tenants }) {
@@ -291,7 +283,7 @@ function RecentActivity({ activities }) {
     String(activity.action || 'Activity').replaceAll('_', ' '),
     activity.admin_email || activity.target_type || '-',
     index === 2 ? AlertTriangle : BellRing,
-    index === 2 ? 'bg-rose-100 text-rose-600' : 'bg-blue-100 text-blue-600',
+    'admin-accent-icon',
   ]);
 
   return (
@@ -317,25 +309,35 @@ export default function AdminDashboard() {
   const [chart, setChart] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [activities, setActivities] = useState([]);
+  const [resourceMetrics, setResourceMetrics] = useState(null);
+  const [resourceSamples, setResourceSamples] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   async function load() {
-    try {
-      const [statsRes, chartRes, tenantsRes, auditRes] = await Promise.all([
-        adminApi.get('/admin/system/stats'),
-        adminApi.get('/admin/subscriptions/revenue-chart?days=31'),
-        adminApi.get('/admin/tenants'),
-        adminApi.get('/admin/tenants/audit/logs'),
-      ]);
-      setStats(statsRes.data);
-      setChart(Array.isArray(chartRes.data) ? chartRes.data : []);
-      setTenants(Array.isArray(tenantsRes.data) ? tenantsRes.data : []);
-      setActivities(Array.isArray(auditRes.data) ? auditRes.data : []);
-    } catch (error) {
-      toast.error(error.response?.data?.error || 'Failed to load admin dashboard');
-    } finally {
-      setLoading(false);
+    setRefreshing(true);
+    const results = await Promise.allSettled([
+      adminApi.get('/admin/system/stats'),
+      adminApi.get('/admin/subscriptions/revenue-chart?days=31'),
+      adminApi.get('/admin/tenants'),
+      adminApi.get('/admin/tenants/audit/logs?page=1'),
+      adminApi.get('/admin/system/metrics'),
+    ]);
+    const [statsResult, chartResult, tenantsResult, auditResult, metricsResult] = results;
+    if (statsResult.status === 'fulfilled') setStats(statsResult.value.data);
+    else toast.error(statsResult.reason?.response?.data?.error || 'Failed to load dashboard summary');
+    if (chartResult.status === 'fulfilled') setChart(Array.isArray(chartResult.value.data) ? chartResult.value.data : (chartResult.value.data.results || []));
+    if (tenantsResult.status === 'fulfilled') setTenants(Array.isArray(tenantsResult.value.data) ? tenantsResult.value.data : (tenantsResult.value.data.results || []));
+    if (auditResult.status === 'fulfilled') {
+      const data = auditResult.value.data;
+      setActivities(Array.isArray(data) ? data : (data.results || []));
     }
+    if (metricsResult.status === 'fulfilled') {
+      setResourceMetrics(metricsResult.value.data);
+      setResourceSamples((previous) => [...previous, metricsResult.value.data].slice(-30));
+    }
+    setLoading(false);
+    setRefreshing(false);
   }
 
   useEffect(() => {
@@ -356,7 +358,6 @@ export default function AdminDashboard() {
       customers: Number(stats?.totalCustomers ?? customers),
       onlineUsers: Number(stats?.onlineUsers ?? online),
       monthlyRevenue,
-      visits: Number(stats?.websiteVisits ?? 0),
     };
   }, [stats, tenants]);
 
@@ -368,38 +369,26 @@ export default function AdminDashboard() {
       .slice(0, 5);
   }, [tenants]);
 
-  if (loading) {
-    return <p className="text-xs font-medium text-slate-600">Loading admin dashboard...</p>;
-  }
+  if (loading) return <div className="space-y-6"><div className="h-28 animate-pulse rounded-2xl bg-white" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">{Array.from({ length: 5 }, (_, index) => <div key={index} className="h-32 animate-pulse rounded-2xl bg-white" />)}</div><div className="grid gap-5 xl:grid-cols-3"><div className="h-80 animate-pulse rounded-2xl bg-white xl:col-span-2" /><div className="h-80 animate-pulse rounded-2xl bg-white" /></div></div>;
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div>
-          <h1 className="page-title">Dashboard</h1>
-          <p className="page-subtitle">Overview of your platform operations</p>
-        </div>
-        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-          <label className="relative block w-full sm:w-[340px]">
-            <Search size={17} className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-700" />
-            <input className="form-input h-8 pl-10 pr-14" placeholder="Search tenants, users, invoices..." />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500">Ctrl K</span>
-          </label>
-          <button type="button" className="btn-secondary" onClick={load}>
-            <CalendarDays size={15} />
-            {formatMonthRange()}
-            <ChevronDown size={14} />
-          </button>
+    <div className="space-y-6">
+      <div className="admin-hero relative overflow-hidden rounded-2xl bg-[#15243d] px-6 py-6 text-white shadow-[0_20px_55px_rgba(15,23,42,0.16)] sm:px-8 sm:py-7">
+        <div className="pointer-events-none absolute -right-8 -top-24 h-72 w-72 rounded-full border border-white/[0.08]" />
+        <div className="pointer-events-none absolute -right-2 -top-16 h-60 w-60 rounded-full border border-white/[0.08]" />
+        <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/70">Platform overview</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Your network at a glance</h2><p className="admin-muted mt-1 text-sm text-white/70">A live view of tenant growth, subscriptions, revenue, and platform health.</p></div>
+          <div className="flex items-center gap-3"><span className="hidden text-xs text-white/70 sm:block">Updated {new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><button type="button" onClick={load} disabled={refreshing} className="inline-flex h-10 items-center gap-2 rounded-xl border border-white/15 bg-white/[0.08] px-4 text-xs font-semibold text-white transition hover:bg-white/[0.14] disabled:opacity-60"><RefreshCw size={14} className={`admin-accent-text ${refreshing ? 'animate-spin' : ''}`} />Refresh</button></div>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
         <MetricCard label="Total Tenants" value={derived.totalTenants.toLocaleString()} helper="All registered tenants" icon={Server} tone="blue" />
         <MetricCard label="Active Tenants" value={derived.activeTenants.toLocaleString()} helper={`${derived.totalTenants ? ((derived.activeTenants / derived.totalTenants) * 100).toFixed(1) : '0.0'}% of total`} icon={CheckCircle2} tone="green" />
         <MetricCard label="Total Customers" value={derived.customers.toLocaleString()} helper="Across all tenants" icon={Users} tone="purple" />
         <MetricCard label="Active Users (Online)" value={derived.onlineUsers.toLocaleString()} helper="Reported by tenant data" icon={Radio} tone="cyan" />
         <MetricCard label="Monthly Revenue" value={formatCompactKES(derived.monthlyRevenue)} helper="Subscription payments this month" icon={WalletCards} tone="orange" spark={revenueSpark} />
-        <MetricCard label="Website Visits" value={derived.visits.toLocaleString()} helper={stats?.websiteVisits === undefined ? 'Metric not provided by API' : 'From stats API'} icon={TrendingUp} tone="rose" />
+        <MetricCard label="Pending setup" value={Number(stats?.pendingTenants || 0).toLocaleString()} helper="Tenants awaiting onboarding" icon={BellRing} tone="rose" />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-4">
@@ -407,6 +396,8 @@ export default function AdminDashboard() {
         <PlatformHealth health={stats?.systemHealth} />
         <SystemPerformance stats={stats} />
       </div>
+
+      <div className="grid gap-5 xl:grid-cols-4"><ResourcePerformance metrics={resourceMetrics} samples={resourceSamples} /></div>
 
       <div className="grid gap-5 xl:grid-cols-4">
         <RecentTenants tenants={recentTenants} />

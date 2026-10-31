@@ -21,7 +21,8 @@ from django.core.mail import send_mail
 from django.core.paginator import Paginator
 from django.db import close_old_connections, connection, transaction
 from django.db.utils import OperationalError
-from django.db.models import Count, Sum
+from django.db.models import Case, CharField, Count, Sum, Q, When, Subquery, F, Value
+from django.db.models.functions import Substr, TruncMonth, Lower, Trim
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect
 from django.utils import timezone
@@ -33,7 +34,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 
 from billing_api.auth import admin_required, tenant_required
-from billing_api.models import AdminUser, Customer, InternetPackage, Payment, PaystackWithdrawal, SubscriptionPayment, Tenant, TenantSubscription, Ticket, User
+from billing_api.models import AdminAuditLog, AdminUser, Customer, InternetPackage, Payment, PaystackWithdrawal, SubscriptionPayment, Tenant, TenantSubscription, Ticket, User
+from core.models import Tenant as SchemaTenant
 from billing_api.services import (
     admin_token,
     check_password,
@@ -53,11 +55,15 @@ from billing_api.services import (
     verify_paystack_transaction,
     paystack_signature_valid,
     initiate_daraja_b2c,
+    initiate_daraja_b2b_settlement,
     platform_daraja_config,
     query_daraja_stk_payment,
     tenant_payout_details,
+    daraja_b2b_settlement_status,
     make_daraja_callback_token,
     verify_daraja_callback_token,
+    make_payment_access_token,
+    verify_payment_access_token,
     _build_port_command_script,
     delete_router_customer,
     captive_portal_url,
@@ -96,6 +102,19 @@ from billing_api.services import (
     utcnow,
     write_audit_log,
 )
+
+
+@csrf_exempt
+@api_view(["GET"])
+@tenant_required
+def tenant_audit_logs(request):
+    tenant_id = str(request.tenant["id"])
+    records = AdminAuditLog.objects.filter(
+        Q(tenant_id=tenant_id)
+        | Q(target_type="tenant", target_id=tenant_id)
+        | Q(metadata__tenantId=tenant_id)
+    ).order_by("-timestamp")[:500]
+    return Response([item.as_dict() for item in records])
 from network.api.v1.views import (
     _customer_secret_script,
     _hotspot_captive_file_script,
@@ -130,6 +149,9 @@ PAYMENT_SETTING_FIELDS = {
     "payout_phone",
     "bank_account_number",
     "bank_code",
+    "bank_daraja_shortcode",
+    "daraja_settlement_till_number",
+    "settlement_destination_type",
     "daraja_consumer_key",
     "daraja_consumer_secret",
     "daraja_shortcode",
@@ -140,19 +162,6 @@ PAYMENT_SETTING_FIELDS = {
     "paystack_bearer",
     "payment_customer_email",
 }
-
-
-def make_payment_access_token(tenant_id, payment_id):
-    digest = hmac.new(
-        settings.SECRET_KEY.encode(),
-        f"payment-access:{tenant_id}:{payment_id}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    return digest[:32]
-
-
-def verify_payment_access_token(tenant_id, payment_id, token):
-    return hmac.compare_digest(make_payment_access_token(tenant_id, payment_id), str(token or ""))
 
 
 def sanitize_router_login_url(value):
@@ -185,13 +194,11 @@ def _customer_username_seed(name, phone):
 
 
 def _generate_customer_username(tenant_id, name, phone):
-    existing = {
-        str(customer.get("username") or "").lower()
-        for customer in list_children(f"tenants/{tenant_id}/customers")
-    }
     seed = _customer_username_seed(name, phone)
     username = seed
-    while username.lower() in existing:
+    while Customer.objects.annotate(username_lower=Lower("username")).filter(
+        tenant_id=tenant_id, username_lower=username.lower()
+    ).exists():
         username = f"{seed}{secrets.randbelow(900) + 100}"
     return username
 
@@ -655,16 +662,20 @@ def tenant_theme_payload(tenant):
         "business_number": tenant.get("business_number") or "",
         "payout_phone": tenant.get("payout_phone") or tenant.get("phone") or "",
         "bank_code": tenant.get("bank_code") or "",
+        "bank_daraja_shortcode": tenant.get("bank_daraja_shortcode") or "",
+        "daraja_settlement_till_number": tenant.get("daraja_settlement_till_number") or "",
+        "settlement_destination_type": tenant.get("settlement_destination_type") or ("till" if tenant.get("daraja_settlement_till_number") else "bank"),
         "bank_account_number": tenant.get("bank_account_number") or "",
         "payment_methods": tenant.get("payment_methods") if isinstance(tenant.get("payment_methods"), list) else ["daraja_paybill"],
         "paystack_bearer": tenant.get("paystack_bearer") or "account",
         "bank_account_status": "withdrawal_ready" if (tenant.get("bank_code") and tenant.get("bank_account_number")) or tenant_payout_details(tenant).get("payout_phone") else "missing_payout_details",
+        "daraja_b2b_settlement_status": daraja_b2b_settlement_status(tenant),
         "paystack_payout_model": "pooled_withdrawals",
         "paystack_manual_payouts_enabled": str(os.getenv("PAYSTACK_MANUAL_PAYOUTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"},
-        "daraja_consumer_key": tenant.get("daraja_consumer_key") or "",
-        "daraja_consumer_secret": tenant.get("daraja_consumer_secret") or "",
+        "has_daraja_consumer_key": bool(tenant.get("daraja_consumer_key")),
+        "has_daraja_consumer_secret": bool(tenant.get("daraja_consumer_secret")),
         "daraja_shortcode": tenant.get("daraja_shortcode") or "",
-        "daraja_passkey": tenant.get("daraja_passkey") or "",
+        "has_daraja_passkey": bool(tenant.get("daraja_passkey")),
         "daraja_till_number": tenant.get("daraja_till_number") or "",
         "daraja_shortcode_type": tenant.get("daraja_shortcode_type") or "CustomerPayBillOnline",
         "daraja_environment": tenant.get("daraja_environment") or "production",
@@ -766,14 +777,10 @@ def _public_pay_impl(request, tenant_id):
     if service_type == "pppoe":
         username = str(data.get("username") or "").strip()
         if username:
-            customer = next(
-                (
-                    item
-                    for item in list_children(f"tenants/{tenant_id}/customers")
-                    if str(item.get("username") or "").lower() == username.lower()
-                ),
-                None,
-            )
+            customer_record = Customer.objects.annotate(username_lower=Lower("username")).filter(
+                tenant_id=tenant_id, username_lower=username.lower()
+            ).first()
+            customer = customer_record.as_dict() if customer_record else None
         phone = normalize_phone(data.get("phone") or (customer or {}).get("phone"))
     elif service_type == "tv":
         mac_address = normalize_mac(data.get("mac_address"))
@@ -1282,12 +1289,74 @@ def _pppoe_grace_payload(data, service_type):
 def customers(request, customer_id=None):
     tenant = request.tenant
     if method(request, "GET") and not customer_id:
-        ensure_expired_customer_invoices(tenant)
-        customers_data = list_children(f"tenants/{tenant['id']}/customers")
-        for item in customers_data:
-            if not item.get("password") and item.get("radius_secret"):
-                item["password"] = item["radius_secret"]
-        return as_collection_response(request, customers_data)
+        queryset = Customer.objects.filter(tenant_id=tenant["id"])
+        service_type = str(request.GET.get("service_type") or "").strip().lower()
+        status = str(request.GET.get("status") or "").strip().lower()
+        search = str(request.GET.get("search") or "").strip()
+        ordering = str(request.GET.get("ordering") or "-created_at").strip()
+        if service_type in {"pppoe", "hotspot", "static"}:
+            queryset = queryset.filter(service_type=service_type)
+        if status:
+            if status == "inactive":
+                queryset = queryset.exclude(status="active")
+            elif status == "paused":
+                queryset = queryset.filter(status__in=["paused", "suspended", "inactive"])
+            elif status == "offline":
+                queryset = queryset.filter(status__in=["offline", "expired"])
+            elif status == "active":
+                queryset = queryset.filter(status="active")
+            else:
+                queryset = queryset.filter(status=status)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(phone__icontains=search)
+                | Q(username__icontains=search) | Q(package__icontains=search)
+                | Q(extra__location__icontains=search) | Q(extra__ip_address__icontains=search)
+                | Q(extra__technician__icontains=search)
+            )
+        ordering_fields = {
+            "created_at": ("created_at", "id"), "-created_at": ("-created_at", "-id"),
+            "name": ("name", "id"), "-name": ("-name", "-id"),
+        }
+        queryset = queryset.order_by(*ordering_fields.get(ordering, ("-created_at", "-id")))
+        page, page_size = parse_page(request)
+        total = queryset.count()
+        if request.GET.get("all") == "1" or request.GET.get("format") == "legacy":
+            results = []
+            for item in queryset:
+                payload = item.as_dict(exclude={"password"})
+                if not payload.get("password") and payload.get("radius_secret"):
+                    payload["password"] = payload["radius_secret"]
+                results.append(payload)
+            return ok(results)
+        start_index = (page - 1) * page_size
+        results = []
+        for item in queryset[start_index:start_index + page_size]:
+            payload = item.as_dict(exclude={"password"})
+            if not payload.get("password") and payload.get("radius_secret"):
+                payload["password"] = payload["radius_secret"]
+            results.append(payload)
+        facet_queryset = Customer.objects.filter(tenant_id=tenant["id"])
+        if service_type in {"pppoe", "hotspot", "static"}:
+            facet_queryset = facet_queryset.filter(service_type=service_type)
+        service_counts = {
+            item["service_type"] or "pppoe": item["count"]
+            for item in facet_queryset
+            .values("service_type").annotate(count=Count("id"))
+        }
+        status_counts = {
+            item["status"] or "inactive": item["count"]
+            for item in facet_queryset
+            .values("status").annotate(count=Count("id"))
+        }
+        pages = max(1, (total + page_size - 1) // page_size)
+        query = request.GET.copy()
+        query["page"] = str(page + 1)
+        next_url = f"{request.path}?{query.urlencode()}" if page < pages else None
+        query["page"] = str(max(1, page - 1))
+        prev_url = f"{request.path}?{query.urlencode()}" if page > 1 else None
+        return ok({"results": results, "count": total, "overall_count": facet_queryset.count(), "pages": pages, "next": next_url, "previous": prev_url,
+                   "service_counts": service_counts, "status_counts": status_counts})
     if method(request, "GET") and customer_id:
         customer = ref(f"tenants/{tenant['id']}/customers/{customer_id}").get()
         if not customer:
@@ -1368,49 +1437,26 @@ def customers(request, customer_id=None):
         if not updates:
             return ok({"message": "No customer fields provided"}, 400)
         if "username" in updates:
-            duplicate = any(
-                str(item.get("id")) != str(customer_id)
-                and str(item.get("username", "")).lower() == str(updates["username"]).lower()
-                for item in list_children(f"tenants/{tenant['id']}/customers")
-            )
+            duplicate = Customer.objects.annotate(username_lower=Lower("username")).filter(tenant_id=tenant["id"], username_lower=str(updates["username"]).lower()).exclude(pk=customer_id).exists()
             if duplicate:
                 return ok({"message": "A customer with this username already exists"}, 409)
         updates["updated_at"] = iso_now()
         ref(f"tenants/{tenant['id']}/customers/{customer_id}").update(updates)
         should_sync_router = any(field in updates for field in ["username", "password", "package", "service_type", "status", "expiry_date"]) or adjustment_applied
-        if should_sync_router and service_type_for_update in {"pppoe", "hotspot", "static"}:
-            synced_customer = {**customer, **updates}
-            pkg = find_child_by_field(f"tenants/{tenant['id']}/packages", "name", synced_customer.get("package"))
-            sync_payload = {
-                **synced_customer,
-                "package_name": synced_customer.get("package"),
-                "speed": (pkg or {}).get("speed"),
-                "duration_seconds": None if package_is_bundle(pkg) else int(package_duration_delta(pkg).total_seconds()) if pkg and service_type_for_update == "hotspot" else None,
-                "limit_bytes_total": package_data_limit_bytes(pkg),
-            }
+        should_send_credentials = "password" in updates or "username" in updates
+        sync_queued = False
+        if (should_sync_router and service_type_for_update in {"pppoe", "hotspot", "static"}) or should_send_credentials:
             try:
-                if has_mikrotik_credentials(tenant):
-                    upsert_customer_access(tenant, sync_payload, disabled=sync_payload.get("status") != "active")
-                    if service_type_for_update != "static":
-                        set_customer_enabled(tenant, sync_payload.get("username"), service_type_for_update, sync_payload.get("status") == "active")
-                elif _router_is_agent_linked(tenant):
-                    _queue_router_command(request, {
-                        "type": "sync_secrets",
-                        "customer_ids": [customer_id],
-                        "script": _customer_secret_script(sync_payload),
-                    })
+                from billing_api.tasks import sync_customer_access_after_update
+                sync_customer_access_after_update.delay(tenant["id"], customer_id, should_send_credentials)
+                sync_queued = True
             except Exception:
-                logger.exception("Failed to sync customer access update")
-        if "password" in updates or "username" in updates:
-            try:
-                send_sms_message(
-                    updates.get("phone") or customer.get("phone"),
-                    _customer_credentials_sms({**customer, **updates}, tenant),
-                    tenant,
-                )
-            except Exception:
-                logger.exception("Failed to send customer credential SMS")
-        return ok({"success": True, "message": "Customer updated", "customer": {"id": customer_id, **customer, **updates}})
+                logger.exception("Could not enqueue customer update sync tenant=%s customer=%s", tenant["id"], customer_id)
+                ref(f"tenants/{tenant['id']}/customers/{customer_id}").update({
+                    "router_sync_status": "queue_unavailable",
+                    "router_sync_error": "Update sync could not be queued",
+                })
+        return ok({"success": True, "message": "Customer updated", "sync_queued": sync_queued, "customer": {"id": customer_id, **customer, **updates}})
     if method(request, "DELETE") and customer_id:
         customer = ref(f"tenants/{tenant['id']}/customers/{customer_id}").get()
         if not customer:
@@ -1437,7 +1483,7 @@ def customer_add(request):
         return ok({"message": "Customer service type must be PPPoE, Hotspot, or Static"}, 400)
     data["username"] = str(data.get("username") or "").strip() or _generate_customer_username(request.tenant["id"], data.get("name"), data.get("phone"))
     data["password"] = str(data.get("password") or "").strip() or _generate_customer_password()
-    if any(str(c.get("username", "")).lower() == str(data["username"]).lower() for c in list_children(f"tenants/{request.tenant['id']}/customers")):
+    if Customer.objects.annotate(username_lower=Lower("username")).filter(tenant_id=request.tenant["id"], username_lower=data["username"].lower()).exists():
         return ok({"message": "A customer with this username already exists"}, 409)
     customer_status = str(data.get("status") or "active").strip().lower()
     if customer_status not in {"active", "inactive", "paused", "suspended"}:
@@ -1448,7 +1494,8 @@ def customer_add(request):
         provision = service_type in {"pppoe", "hotspot"}
     provision = bool(provision)
     if service_type == "static":
-        used_ips = {str(c.get("ip_address") or "").strip() for c in list_children(f"tenants/{request.tenant['id']}/customers")}
+        used_ips = set(Customer.objects.filter(tenant_id=request.tenant["id"], service_type="static")
+                       .exclude(ip_address="").values_list("ip_address", flat=True))
         requested_ip = str(data.get("ip_address") or "").strip()
         if requested_ip:
             try:
@@ -1486,36 +1533,11 @@ def customer_add(request):
     if grace_payload.get("grace_period_enabled"):
         customer_status = "active"
         router_disabled = False
-    provisioning_status = "not_requested"
-    provisioning_message = None
+    provisioning_status = "queued" if provision else "not_requested"
+    provisioning_message = f"{service_type.upper()} access queued for background provisioning" if provision else None
     if provision:
         if not has_mikrotik_credentials(request.tenant) and not _router_is_agent_linked(request.tenant):
             return ok({"message": "Link a MikroTik router before provisioning customers"}, 400)
-        if has_mikrotik_credentials(request.tenant):
-            try:
-                if service_type == "pppoe":
-                    create_ppp_profile(request.tenant, pkg["name"], pkg.get("speed"))
-                elif service_type == "hotspot":
-                    create_hotspot_profile(request.tenant, pkg["name"], pkg.get("speed"))
-                upsert_customer_access(request.tenant, {**data, "package_name": data["package_name"], "speed": pkg.get("speed"), "service_type": service_type, "status": customer_status}, disabled=router_disabled)
-                provisioning_status = "provisioned"
-                provisioning_message = f"{service_type.upper()} access created on MikroTik"
-            except (TimeoutError, OSError):
-                _queue_router_command(request, {
-                    "type": "sync_secrets",
-                    "router_id": mikrotik_router_id,
-                    "script": _customer_secret_script({**data, "package": data["package_name"], "speed": pkg.get("speed"), "service_type": service_type, "status": customer_status, "mikrotik_bridge_name": mikrotik_managed_bridge_name(request.tenant)}),
-                })
-                provisioning_status = "queued"
-                provisioning_message = f"{service_type.upper()} access queued for MikroTik sync"
-        else:
-            _queue_router_command(request, {
-                "type": "sync_secrets",
-                "router_id": mikrotik_router_id,
-                "script": _customer_secret_script({**data, "package": data["package_name"], "speed": pkg.get("speed"), "service_type": service_type, "status": customer_status, "mikrotik_bridge_name": mikrotik_managed_bridge_name(request.tenant)}),
-            })
-            provisioning_status = "queued"
-            provisioning_message = f"{service_type.upper()} access queued for MikroTik sync"
     customer_payload = {
             "name": data["name"],
             "phone": data["phone"],
@@ -1543,16 +1565,28 @@ def customer_add(request):
         }
     new_ref = ref(f"tenants/{request.tenant['id']}/customers").push(customer_payload)
     notification_result = None
+    if provision:
+        try:
+            from billing_api.tasks import provision_customer_access
+            provision_customer_access.delay(request.tenant["id"], new_ref.key)
+        except Exception:
+            logger.exception("Could not enqueue customer provisioning tenant=%s customer=%s", request.tenant["id"], new_ref.key)
+            provisioning_status = "queue_unavailable"
+            provisioning_message = "Provisioning could not be queued. Retry provisioning from the customer actions."
+            ref(f"tenants/{request.tenant['id']}/customers/{new_ref.key}").update({
+                "provisioning_status": provisioning_status, "provisioning_message": provisioning_message,
+            })
     if service_type in {"pppoe", "static"}:
         try:
-            notification_result = notify_customer_created(request.tenant, customer_payload)
-            ref(f"tenants/{request.tenant['id']}/customers/{new_ref.key}").update({
-                "customer_created_notification_status": "sent" if notification_result.get("customer_whatsapp", {}).get("sent") else "skipped",
-                "customer_created_notification_result": notification_result,
-                "customer_created_notification_at": iso_now(),
-            })
+            from billing_api.tasks import notify_customer_created as notify_customer_created_task
+            notify_customer_created_task.delay(request.tenant["id"], new_ref.key)
+            notification_result = {"queued": True}
         except Exception:
-            logger.exception("Failed to send customer creation WhatsApp notification")
+            logger.exception("Could not enqueue customer creation notification tenant=%s customer=%s", request.tenant["id"], new_ref.key)
+            ref(f"tenants/{request.tenant['id']}/customers/{new_ref.key}").update({
+                "customer_created_notification_status": "queue_unavailable",
+                "customer_created_notification_error": "Notification could not be queued",
+            })
     # Sync to Postgres + RADIUS if tenant has RADIUS enabled
     if request.tenant.get("radius_enabled") and service_type in {"hotspot", "pppoe"}:
         try:
@@ -2140,7 +2174,6 @@ def paystack_withdrawal_otp(request, withdrawal_id):
 @tenant_required
 def payments(request):
     if method(request, "GET"):
-        ensure_expired_customer_invoices(request.tenant)
         payments_data = list_children(f"tenants/{request.tenant['id']}/payments")
         paystack_refs = {
             str(item.get("paystack_reference") or ""): item
@@ -2337,7 +2370,6 @@ def customer_renew(request, customer_id):
 def invoices(request, invoice_id=None):
     tenant_id = request.tenant["id"]
     if method(request, "GET") and not invoice_id:
-        ensure_expired_customer_invoices(request.tenant)
         invoices_data = [{"id": item_id, **item} for item_id, item in _tenant_extra_dict(tenant_id, "invoices").items()]
         status_filter = request.GET.get("status")
         if status_filter and status_filter != "all":
@@ -2463,8 +2495,6 @@ def dashboard_stats(request):
     payments_qs = Payment.objects.filter(tenant_id=tenant_id)
     customers_qs = Customer.objects.filter(tenant_id=tenant_id)
     packages_qs = InternetPackage.objects.filter(tenant_id=tenant_id)
-    payments_data = [payment.as_dict() for payment in payments_qs]
-    customers_data = [customer.as_dict() for customer in customers_qs]
     packages_data = [package.as_dict() for package in packages_qs]
     now = utcnow()
     today = now.date()
@@ -2479,17 +2509,35 @@ def dashboard_stats(request):
             or (provider == "mpesa" and str(payment.get("collection_account") or "").strip().lower() == "platform_daraja")
         )
 
-    paid_payments = [p for p in payments_data if p.get("status") == "success"]
-    paid_customer_ids = {p.get("customer_id") for p in paid_payments}
-    paid_usernames = {p.get("access_username") for p in paid_payments}
-    paid_phones = {p.get("phone") for p in paid_payments}
-    current_active_package_customers = [
-        c for c in customers_data
-        if is_current_active_package_customer(c, now, paid_customer_ids, paid_usernames, paid_phones)
-    ]
-    daraja_paid_payments = [p for p in paid_payments if is_daraja_payment(p)]
-    revenue_this_month = sum(float(p.get("amount") or 0) for p in paid_payments if (payment_date(p) or now) >= month_start)
-    revenue_today = sum(float(p.get("amount") or 0) for p in daraja_paid_payments if payment_date(p) and payment_date(p).date() == today)
+    paid_payments = payments_qs.filter(status="success").annotate(
+        report_date=Case(
+            When(paid_at__isnull=False, paid_at__gt="", then="paid_at"),
+            When(initiated_at__isnull=False, initiated_at__gt="", then="initiated_at"),
+            default=Value("", output_field=CharField()), output_field=CharField(),
+        )
+    )
+    paid_customer_ids = paid_payments.exclude(customer_id__isnull=True).values("customer_id")
+    paid_usernames = paid_payments.exclude(access_username__isnull=True).exclude(access_username="").values("access_username")
+    paid_phones = paid_payments.exclude(phone="").values("phone")
+    has_successful_payment = (
+        Q(last_payment_id__gt="") | Q(last_payment_code__gt="")
+        | Q(pk__in=Subquery(paid_customer_ids))
+        | Q(username__in=Subquery(paid_usernames)) | Q(phone__in=Subquery(paid_phones))
+    )
+    current_active_package_customers = customers_qs.filter(status="active").exclude(package="").filter(has_successful_payment).filter(
+        Q(expiry_date__isnull=True) | Q(expiry_date="") | Q(expiry_date__gt=now.isoformat())
+    )
+    revenue_this_month = float(paid_payments.filter(report_date__gte=month_start.isoformat()).aggregate(total=Sum("amount"))["total"] or 0)
+    daraja_condition = (
+        Q(extra__payment_method__in=["daraja_paybill", "daraja_buygoods"])
+        | Q(extra__daraja_receipt_number__gt="") | Q(extra__mpesa_receipt_number__gt="")
+        | Q(extra__daraja_checkout_request_id__gt="") | Q(extra__daraja_merchant_request_id__gt="")
+        | Q(provider="mpesa", extra__collection_account="platform_daraja")
+    )
+    revenue_today = float(paid_payments.filter(daraja_condition, report_date__startswith=today.isoformat()).aggregate(total=Sum("amount"))["total"] or 0)
+    twelve_month_start = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=335)).replace(day=1)
+    monthly_payment_rows = paid_payments.filter(report_date__gte=twelve_month_start.isoformat()).annotate(month=Substr("report_date", 1, 7)).values("month").annotate(total=Sum("amount"))
+    monthly_payment_map = {item["month"]: float(item["total"] or 0) for item in monthly_payment_rows}
 
     last_12 = []
     for offset in range(11, -1, -1):
@@ -2499,38 +2547,36 @@ def dashboard_stats(request):
             month += 12
             year -= 1
         label = datetime(year, month, 1).strftime("%b")
-        total = sum(float(p.get("amount") or 0) for p in paid_payments if (payment_date(p) and payment_date(p).year == year and payment_date(p).month == month))
+        total = monthly_payment_map.get(f"{year:04d}-{month:02d}", 0)
         last_12.append([label, round(total, 2)])
 
     days = []
+    active_customer_count = current_active_package_customers.count()
     for offset in range(6, -1, -1):
         day = (now - timedelta(days=offset)).date()
         label = day.strftime("%a")
-        active = len(current_active_package_customers)
-        new = len([c for c in customers_data if parse_date(c.get("created_at")) and parse_date(c.get("created_at")).date() == day])
+        active = active_customer_count
+        new = customers_qs.filter(created_at__date=day).count()
         days.append([label, active, new])
 
-    package_counts = Counter(c.get("package") or "Unassigned" for c in customers_data)
+    package_counts = {item["package"] or "Unassigned": item["count"] for item in customers_qs.values("package").annotate(count=Count("id"))}
     palette = ["#fa8200", "#2563eb", "#16a34a", "#dc2626", "#9333ea", "#0f766e"]
     package_utilization = [[name, count, palette[index % len(palette)]] for index, (name, count) in enumerate(package_counts.items())]
-    package_revenue = defaultdict(float)
-    for payment in paid_payments:
-        package_revenue[payment.get("package_name") or "Unassigned"] += float(payment.get("amount") or 0)
+    package_revenue = {item["package_name"] or "Unassigned": float(item["revenue"] or 0) for item in paid_payments.values("package_name").annotate(revenue=Sum("amount"))}
     # Enrich customer data with RADIUS session data usage when available
     radius_data_usage = {}
     try:
         from billing_api.models import RadiusSession as RadiusSessionModel
-        from django.db.models import Sum
-        from datetime import timedelta as td
 
-        month_ago = now - td(days=30)
+        month_ago = now - timedelta(days=30)
         sessions = RadiusSessionModel.objects.filter(
             tenant_id=tenant_id,
             started_at__gte=month_ago,
         ).values("customer__username").annotate(
             total_input=Sum("input_octets"),
             total_output=Sum("output_octets"),
-        )
+            total_usage=Sum("input_octets") + Sum("output_octets"),
+        ).order_by("-total_usage")[:20]
         for s in sessions:
             username = s["customer__username"] or ""
             radius_data_usage[username] = float((s["total_input"] or 0) + (s["total_output"] or 0))
@@ -2542,9 +2588,8 @@ def dashboard_stats(request):
     radius_package_count = defaultdict(int)
     try:
         from billing_api.models import RadiusSession as RadiusSessionModel
-        from django.db.models import Sum, Count
 
-        month_ago = now - td(days=30)
+        month_ago = now - timedelta(days=30)
         pkg_sessions = RadiusSessionModel.objects.filter(
             tenant_id=tenant_id,
             started_at__gte=month_ago,
@@ -2562,9 +2607,10 @@ def dashboard_stats(request):
         pass
 
     package_performance = []
+    active_package_counts = {item["package"]: item["count"] for item in current_active_package_customers.values("package").annotate(count=Count("id"))}
     for package in packages_data:
         name = package.get("name")
-        active_count = len([c for c in current_active_package_customers if c.get("package") == name])
+        active_count = active_package_counts.get(name, 0)
         revenue = package_revenue.get(name, 0)
         # Use real RADIUS data usage if available, fall back to package field
         if name in radius_package_usage and radius_package_count.get(name, 0) > 0:
@@ -2584,12 +2630,11 @@ def dashboard_stats(request):
             }
         )
 
-    pppoe_customers = [c for c in customers_data if str(c.get("service_type") or "pppoe").lower() == "pppoe"]
-    hotspot_customers = [c for c in customers_data if str(c.get("service_type") or "hotspot").lower() == "hotspot"]
-    active_hotspot_users = [
-        c for c in current_active_package_customers
-        if str(c.get("service_type") or "").lower() == "hotspot"
-    ]
+    pppoe_customers_count = customers_qs.filter(Q(service_type="pppoe") | Q(service_type="")).count()
+    hotspot_customers_count = customers_qs.filter(service_type="hotspot").count()
+    active_hotspot_users = current_active_package_customers.filter(
+        service_type="hotspot", username__in=list(radius_data_usage)[:20]
+    ).values("username", "phone", "extra")
     def snapshot_active_sessions(router_snapshot):
         migration = ((router_snapshot or {}).get("migration_export") or {})
         ppp_rows = migration.get("ppp_active_sessions") or []
@@ -2645,7 +2690,8 @@ def dashboard_stats(request):
     last_seen = parse_date(request.tenant.get("mikrotik_last_seen_at"))
     agent_online = bool(last_seen and utcnow() - last_seen <= timedelta(minutes=3))
     router_status = "suspended" if request.tenant.get("mikrotik_router_suspended") else "online" if router_sample_source == "routeros_api" or agent_online else "offline"
-    active_ratio = (len(current_active_package_customers) / len(customers_data) * 100) if customers_data else 0
+    total_customer_count = customers_qs.count()
+    active_ratio = (active_customer_count / total_customer_count * 100) if total_customer_count else 0
     traffic = snapshot.get("traffic") or {}
     traffic_bps = int(traffic.get("rx_bps") or 0) + int(traffic.get("tx_bps") or 0)
     signal_values = [
@@ -2704,7 +2750,7 @@ def dashboard_stats(request):
         pass
     router_active_session_count = int((active_sessions or {}).get("total") or len(active_session_items or [])) if isinstance(active_sessions, dict) else 0
     connected_users_count = len(active_session_usernames) or max(router_active_session_count, radius_active_session_count)
-    enabled_customers_count = len(current_active_package_customers)
+    enabled_customers_count = active_customer_count
     top_active_sessions = [
         {
             "username": item.get("username") or "-",
@@ -2725,9 +2771,9 @@ def dashboard_stats(request):
                 "revenue_this_month": round(revenue_this_month, 2),
                 "revenue_today": round(revenue_today, 2),
                 "sms_balance": float(request.tenant.get("sms_balance") or 0),
-                "total_customers": len(customers_data),
-                "pppoe_customers": len(pppoe_customers),
-                "hotspot_customers": len(hotspot_customers),
+                "total_customers": total_customer_count,
+                "pppoe_customers": pppoe_customers_count,
+                "hotspot_customers": hotspot_customers_count,
                 "active_customers": enabled_customers_count,
                 "enabled_customers": enabled_customers_count,
                 "connected_users": connected_users_count,
@@ -2756,32 +2802,13 @@ def dashboard_stats(request):
             "revenue_forecast": last_12[-6:] + [[f"+{i}", round((last_12[-1][1] if last_12 else 0) * (1 + i * 0.05), 2)] for i in range(1, 4)],
             "sms_chart": [[item[0], int(request.tenant.get("sms_sent_today") or 0)] for item in days],
             "most_active_users": sorted(
-                [
-                    {
-                        "username": c.get("username") or c.get("phone"),
-                        "phone": c.get("phone"),
-                        "data_used": radius_data_usage.get(
-                            c.get("username"),
-                            float(c.get("data_used") or c.get("data_usage") or 0),
-                        ),
-                    }
-                    for c in customers_data
-                ],
-                key=lambda item: item["data_used"],
-                reverse=True,
+                [{"username": c["username"] or c["phone"], "phone": c["phone"], "data_used": radius_data_usage.get(c["username"], float((c["extra"] or {}).get("data_used") or (c["extra"] or {}).get("data_usage") or 0))}
+                 for c in customers_qs.filter(username__in=list(radius_data_usage)[:20]).values("username", "phone", "extra")],
+                key=lambda item: item["data_used"], reverse=True,
             )[:6],
             "top_hotspot_active_users": sorted(
-                [
-                    {
-                        "username": c.get("username") or c.get("phone"),
-                        "phone": c.get("phone"),
-                        "data_used": radius_data_usage.get(
-                            c.get("username"),
-                            float(c.get("data_used") or c.get("data_usage") or 0),
-                        ),
-                    }
-                    for c in active_hotspot_users
-                ],
+                [{"username": c["username"] or c["phone"], "phone": c["phone"], "data_used": radius_data_usage.get(c["username"], float((c["extra"] or {}).get("data_used") or (c["extra"] or {}).get("data_usage") or 0))}
+                 for c in active_hotspot_users],
                 key=lambda item: item["data_used"],
                 reverse=True,
             )[:5],
@@ -2794,44 +2821,56 @@ def dashboard_stats(request):
 @api_view(["GET"])
 @tenant_required
 def report_revenue(request):
-    start = parse_date(request.GET.get("from"))
-    end = parse_date(request.GET.get("to"))
-    monthly = defaultdict(float)
-    for payment in tenant_payments(request.tenant["id"]):
-        dt = payment_date(payment)
-        if payment.get("status") == "success" and in_range(dt, start, end):
-            monthly[dt.strftime("%Y-%m")] += float(payment.get("amount") or 0)
-    rows = [{"month": key, "revenue": round(value, 2)} for key, value in sorted(monthly.items())]
-    return ok({"results": rows, "total": round(sum(item["revenue"] for item in rows), 2)})
+    start = request.GET.get("from")
+    end = request.GET.get("to")
+    payments = Payment.objects.filter(tenant_id=request.tenant["id"], status="success")
+    payments = payments.annotate(
+        report_date=Case(
+            When(paid_at__isnull=False, paid_at__gt="", then="paid_at"),
+            When(initiated_at__isnull=False, initiated_at__gt="", then="initiated_at"),
+            default=Value("", output_field=CharField()), output_field=CharField(),
+        )
+    )
+    if start:
+        payments = payments.filter(report_date__gte=start)
+    if end:
+        payments = payments.filter(report_date__lt=f"{end}T23:59:59.999999Z")
+    rows = list(payments.annotate(month=Substr("report_date", 1, 7)).values("month").annotate(revenue=Sum("amount")).order_by("month"))
+    results = [{"month": row["month"], "revenue": round(float(row["revenue"] or 0), 2)} for row in rows if row["month"]]
+    return ok({"results": results, "total": round(sum(item["revenue"] for item in results), 2)})
 
 
 @csrf_exempt
 @api_view(["GET"])
 @tenant_required
 def report_customers(request):
+    customers = Customer.objects.filter(tenant_id=request.tenant["id"])
     start = parse_date(request.GET.get("from"))
     end = parse_date(request.GET.get("to"))
-    monthly = defaultdict(int)
-    customers_data = tenant_customers(request.tenant["id"])
-    for customer in customers_data:
-        dt = parse_date(customer.get("created_at"))
-        if in_range(dt, start, end):
-            monthly[dt.strftime("%Y-%m")] += 1
-    expired = len([c for c in customers_data if c.get("expiry_date") and str(c.get("expiry_date")) < iso_now()])
-    return ok({"results": [{"month": key, "new_customers": value} for key, value in sorted(monthly.items())], "total_customers": len(customers_data), "expired_customers": expired})
+    scoped = customers
+    if start:
+        scoped = scoped.filter(created_at__gte=start)
+    if end:
+        scoped = scoped.filter(created_at__lte=end)
+    grouped = scoped.annotate(month=TruncMonth("created_at")).values("month").annotate(new_customers=Count("id")).order_by("month")
+    rows = [{"month": item["month"].strftime("%Y-%m"), "new_customers": item["new_customers"]} for item in grouped if item["month"]]
+    total = scoped.count()
+    expired_qs = customers.exclude(expiry_date__isnull=True).exclude(expiry_date="").filter(expiry_date__lt=iso_now())
+    if start:
+        expired_qs = expired_qs.filter(created_at__gte=start)
+    if end:
+        expired_qs = expired_qs.filter(created_at__lte=end)
+    return ok({"results": rows, "total_customers": total, "expired_customers": expired_qs.count()})
 
 
 @csrf_exempt
 @api_view(["GET"])
 @tenant_required
 def report_packages(request):
-    customers_data = tenant_customers(request.tenant["id"])
-    payments_data = [p for p in tenant_payments(request.tenant["id"]) if p.get("status") == "success"]
-    rows = []
-    for package in tenant_packages(request.tenant["id"]):
-        name = package.get("name")
-        revenue = sum(float(p.get("amount") or 0) for p in payments_data if p.get("package_name") == name)
-        rows.append({"package": name, "price": float(package.get("price") or 0), "active_customers": len([c for c in customers_data if c.get("package") == name and c.get("status") == "active"]), "revenue": round(revenue, 2)})
+    tenant_id = request.tenant["id"]
+    active_counts = {item["package"]: item["count"] for item in Customer.objects.filter(tenant_id=tenant_id, status="active").values("package").annotate(count=Count("id"))}
+    revenues = {item["package_name"]: float(item["revenue"] or 0) for item in Payment.objects.filter(tenant_id=tenant_id, status="success").values("package_name").annotate(revenue=Sum("amount"))}
+    rows = [{"package": package.name, "price": float(package.price or 0), "active_customers": active_counts.get(package.name, 0), "revenue": round(revenues.get(package.name, 0), 2)} for package in InternetPackage.objects.filter(tenant_id=tenant_id).only("name", "price")]
     return ok({"results": rows})
 
 
@@ -2914,6 +2953,15 @@ def settings_business(request):
         return ok(tenant_theme_payload(request.tenant))
 
     data = body(request)
+    if "business_name" in data:
+        business_name = str(data.get("business_name") or "").strip()
+        if not business_name:
+            return ok({"message": "Business name cannot be empty"}, 400)
+        current_business_name = str(request.tenant.get("business_name") or "").strip()
+        if (business_name.lower() != current_business_name.lower() and (
+                Tenant.objects.annotate(normalized_business=Lower(Trim("business_name"))).filter(normalized_business=business_name.lower()).exclude(pk=tenant_id).exists()
+                or SchemaTenant.objects.annotate(normalized_business=Lower(Trim("business_name"))).filter(normalized_business=business_name.lower()).exclude(pk=tenant_id).exists())):
+            return ok({"message": "A business with this name already exists"}, 409)
     allowed = [
         "business_name",
         "owner_name",
@@ -2926,6 +2974,9 @@ def settings_business(request):
         "business_number",
         "payout_phone",
         "bank_code",
+        "bank_daraja_shortcode",
+        "daraja_settlement_till_number",
+        "settlement_destination_type",
         "bank_account_number",
         "payment_methods",
         "payment_provider",
@@ -2940,6 +2991,8 @@ def settings_business(request):
         "payment_customer_email",
     ]
     updates = {}
+    if "business_name" in data:
+        updates["business_name"] = str(data["business_name"]).strip()
     requested_payment_fields = PAYMENT_SETTING_FIELDS.intersection(data)
     changed_payment_fields = {
         field for field in requested_payment_fields
@@ -2997,6 +3050,17 @@ def settings_business(request):
             elif field == "daraja_environment":
                 value = str(data[field] or "production").strip().lower()
                 updates[field] = "sandbox" if value == "sandbox" else "production"
+            elif field == "bank_daraja_shortcode":
+                updates[field] = "".join(ch for ch in str(data[field] or "") if ch.isdigit())
+            elif field == "daraja_settlement_till_number":
+                updates[field] = "".join(ch for ch in str(data[field] or "") if ch.isdigit())
+            elif field == "settlement_destination_type":
+                updates[field] = "till" if str(data[field] or "").strip().lower() == "till" else "bank"
+            elif field in {"daraja_consumer_key", "daraja_consumer_secret", "daraja_passkey"}:
+                # Blank values preserve the server-side credential. Secrets are
+                # never sent back to the browser after they have been saved.
+                if str(data[field] or "").strip():
+                    updates[field] = str(data[field])
             else:
                 updates[field] = str(data[field]).strip()
     if updates.get("theme_mode") not in {None, "light", "dark", "system"}:
@@ -3021,7 +3085,10 @@ def settings_business(request):
 
     tenant_record = Tenant.objects.get(pk=tenant_id)
     tenant_record.apply_data(updates)
-    tenant_record.save()
+    try:
+        tenant_record.save()
+    except IntegrityError:
+        return ok({"message": "A business with this name already exists"}, 409)
     return ok({"success": True, "message": "Business settings saved", "config": tenant_theme_payload({**merged, **updates})})
 
 
@@ -3650,39 +3717,6 @@ def mark_customer_invoice_paid(tenant_id, customer_id, payment):
     return {"id": open_invoice["id"], **open_invoice, **updates}
 
 
-def ensure_expired_customer_invoices(tenant):
-    tenant_id = tenant.get("id")
-    if not tenant_id:
-        return []
-    now = timezone.now()
-    created = []
-    for customer in list_children(f"tenants/{tenant_id}/customers"):
-        if str(customer.get("service_type") or "").strip().lower() not in {"pppoe", "static"}:
-            continue
-        expiry_raw = customer.get("expiry_date") or customer.get("expires_at")
-        if not expiry_raw:
-            continue
-        expiry = parse_datetime(str(expiry_raw))
-        if not expiry:
-            continue
-        if expiry.tzinfo is None:
-            expiry = timezone.make_aware(expiry, timezone.get_current_timezone())
-        if expiry > now:
-            continue
-        marker = f"expiry_invoice_{expiry.date().isoformat()}"
-        if customer.get(marker):
-            continue
-        amount_due = customer.get("amount_payable")
-        if amount_due in {None, ""}:
-            pkg = find_child_by_field(f"tenants/{tenant_id}/packages", "name", customer.get("package"))
-            amount_due = (pkg or {}).get("amount_payable") or (pkg or {}).get("price") or 0
-        invoice = create_customer_invoice(tenant, customer, amount_due, reason="subscription_expired", due_at=expiry.isoformat())
-        if invoice:
-            ref(f"tenants/{tenant_id}/customers/{customer['id']}").update({marker: invoice["id"], "last_expiry_invoice_at": iso_now()})
-            created.append(invoice)
-    return created
-
-
 def notify_payment_access(tenant, payment, access):
     amount_payable = payment.get("amount_payable") or payment.get("amount") or ""
     notification_context = {
@@ -4052,12 +4086,15 @@ def complete_daraja_payment(tenant_id, payment_id, callback_metadata, amount, re
         platform_fee_fixed = 0
     platform_fee = round((settlement_amount * platform_fee_percent / 100) + platform_fee_fixed, 2) if platform_collected else 0
     tenant_net_amount = max(0, round(settlement_amount - platform_fee, 2)) if platform_collected else 0
+    b2b_settlement_status = daraja_b2b_settlement_status(tenant_data)
+    b2b_destination_type = payout.get("settlement_destination_type")
+    b2b_recipient = payout.get("daraja_settlement_till_number") if b2b_destination_type == "till" else payout.get("bank_daraja_shortcode")
     update.update({
         "settlement_gross_amount": settlement_amount,
         "settlement_fee_amount": platform_fee,
         "tenant_net_amount": tenant_net_amount,
         "tenant_payout": payout,
-        "tenant_settlement_status": ("queued" if payout.get("payout_phone") else "missing_payout_details") if platform_collected else "not_required",
+        "tenant_settlement_status": ("queued" if b2b_settlement_status == "withdrawal_ready" else b2b_settlement_status) if platform_collected else "not_required",
         "tenant_settlement_queued_at": iso_now() if platform_collected else "",
     })
     ref(f"tenants/{tenant_id}/payments/{payment_id}").update(update)
@@ -4073,22 +4110,40 @@ def complete_daraja_payment(tenant_id, payment_id, callback_metadata, amount, re
         "settlement_status": update["tenant_settlement_status"],
         "settlement_updated_at": iso_now(),
     }
-    if platform_collected and payout.get("payout_phone") and tenant_net_amount > 0:
+    if platform_collected and b2b_settlement_status == "withdrawal_ready" and tenant_net_amount > 0:
+        b2b_originator_id = f"SET{secrets.token_hex(14).upper()}"
+        update.update({
+            "tenant_settlement_status": "initiating",
+            "tenant_settlement_provider": "daraja_b2b",
+            "tenant_settlement_originator_conversation_id": b2b_originator_id,
+            "tenant_settlement_destination_type": b2b_destination_type,
+        })
+        ref(f"tenants/{tenant_id}/payments/{payment_id}").update(update)
+        tenant_balance_update.update({
+            "settlement_pending_amount": round(current_balance, 2),
+            "settlement_status": "initiating",
+        })
+        ref(f"tenants/{tenant_id}").update(tenant_balance_update)
         try:
-            b2c = initiate_daraja_b2c(
+            b2b = initiate_daraja_b2b_settlement(
                 platform_daraja_config({"id": tenant_id, **tenant_data}),
                 payment_id,
                 tenant_net_amount,
-                payout.get("payout_phone"),
+                b2b_destination_type,
+                b2b_recipient,
+                payout.get("bank_account_number"),
                 remarks=f"{tenant_data.get('business_name') or tenant_id} settlement",
+                originator_id=b2b_originator_id,
             )
             update.update({
                 "tenant_settlement_status": "requested",
+                "tenant_settlement_provider": "daraja_b2b",
+                "tenant_settlement_recipient_shortcode": b2b_recipient,
                 "tenant_settlement_requested_at": iso_now(),
-                "tenant_settlement_conversation_id": b2c.get("ConversationID"),
-                "tenant_settlement_originator_conversation_id": b2c.get("OriginatorConversationID"),
-                "tenant_settlement_response_code": b2c.get("ResponseCode"),
-                "tenant_settlement_response_description": b2c.get("ResponseDescription"),
+                "tenant_settlement_conversation_id": b2b.get("ConversationID"),
+                "tenant_settlement_originator_conversation_id": b2b.get("OriginatorConversationID"),
+                "tenant_settlement_response_code": b2b.get("ResponseCode"),
+                "tenant_settlement_response_description": b2b.get("ResponseDescription"),
             })
             tenant_balance_update.update({
                 "settlement_pending_amount": max(0, round(current_balance, 2)),
@@ -4111,6 +4166,20 @@ def complete_daraja_payment(tenant_id, payment_id, callback_metadata, amount, re
             })
             tenant_balance_update["settlement_status"] = "request_failed"
     ref(f"tenants/{tenant_id}/payments/{payment_id}").update(update)
+    latest_payment = ref(f"tenants/{tenant_id}/payments/{payment_id}").get() or {}
+    if latest_payment.get("tenant_settlement_result_at"):
+        for key in (
+            "tenant_settlement_status",
+            "tenant_settlement_result_code",
+            "tenant_settlement_result_desc",
+            "tenant_settlement_result_at",
+            "tenant_settlement_result",
+        ):
+            if key in latest_payment:
+                update[key] = latest_payment[key]
+        tenant_balance_update.pop("settlement_pending_amount", None)
+        tenant_balance_update["settlement_status"] = latest_payment.get("tenant_settlement_status") or "requested"
+        ref(f"tenants/{tenant_id}/payments/{payment_id}").update(update)
     ref(f"tenants/{tenant_id}").update(tenant_balance_update)
     logger.info("Daraja payment completed tenant=%s payment=%s receipt=%s phone=%s amount=%s", tenant_id, payment_id, receipt, phone or payment.get("phone"), paid_amount)
     return True
@@ -4268,4 +4337,70 @@ def daraja_b2c_timeout(request):
     matched = update_b2c_settlement(body(request), "timeout")
     if not matched:
         logger.warning("Daraja B2C timeout did not match a payment")
+    return ok({"success": True})
+
+
+def update_b2b_bank_settlement(event, callback_status):
+    result = (event or {}).get("Result") or {}
+    originator_id = result.get("OriginatorConversationID") or (event or {}).get("OriginatorConversationID") or ""
+    conversation_id = result.get("ConversationID") or (event or {}).get("ConversationID") or ""
+    result_code = result.get("ResultCode")
+    result_desc = result.get("ResultDesc") or ""
+    for tenant in list_children("tenants"):
+        tenant_id = tenant.get("id")
+        for payment in list_children(f"tenants/{tenant_id}/payments"):
+            if payment.get("tenant_settlement_provider") != "daraja_b2b":
+                continue
+            matches_originator = originator_id and payment.get("tenant_settlement_originator_conversation_id") == originator_id
+            matches_conversation = conversation_id and payment.get("tenant_settlement_conversation_id") == conversation_id
+            if not (matches_originator or matches_conversation):
+                continue
+            payment_id = payment.get("id")
+            if payment.get("tenant_settlement_result_at"):
+                return True
+            if callback_status == "timeout":
+                settlement_status = "timeout"
+            else:
+                settlement_status = "paid" if str(result_code) == "0" else "failed"
+            now = iso_now()
+            update = {
+                "tenant_settlement_status": settlement_status,
+                "tenant_settlement_result_code": result_code,
+                "tenant_settlement_result_desc": result_desc,
+                "tenant_settlement_result": result,
+            }
+            if callback_status == "timeout":
+                update["tenant_settlement_timeout_at"] = now
+            else:
+                update["tenant_settlement_result_at"] = now
+            ref(f"tenants/{tenant_id}/payments/{payment_id}").update(update)
+            tenant_update = {
+                "settlement_status": settlement_status,
+                "settlement_last_result_at": now,
+                "settlement_last_result_desc": result_desc or ("B2B bank transfer timed out; reconcile before retrying." if callback_status == "timeout" else ""),
+            }
+            if settlement_status == "failed":
+                tenant_data = ref(f"tenants/{tenant_id}").get() or {}
+                current_balance = float(tenant_data.get("settlement_pending_amount") or 0)
+                tenant_update["settlement_pending_amount"] = round(current_balance + float(payment.get("tenant_net_amount") or 0), 2)
+            ref(f"tenants/{tenant_id}").update(tenant_update)
+            return True
+    return False
+
+
+@csrf_exempt
+@api_view(["POST"])
+def daraja_b2b_result(request):
+    matched = update_b2b_bank_settlement(body(request), "result")
+    if not matched:
+        logger.warning("Daraja B2B bank settlement result did not match a payment")
+    return ok({"success": True})
+
+
+@csrf_exempt
+@api_view(["POST"])
+def daraja_b2b_timeout(request):
+    matched = update_b2b_bank_settlement(body(request), "timeout")
+    if not matched:
+        logger.warning("Daraja B2B bank settlement timeout did not match a payment")
     return ok({"success": True})
