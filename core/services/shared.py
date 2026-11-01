@@ -291,6 +291,12 @@ def selected_collection_provider(tenant=None, requested_provider=None, platform_
     tenant = tenant or {}
     requested = str(requested_provider or "").strip().lower()
     if requested in {"paystack", "daraja", "mpesa"}:
+        methods = tenant.get("payment_methods") if isinstance(tenant.get("payment_methods"), list) else []
+        normalized_methods = {str(item or "").strip().lower() for item in methods}
+        has_daraja = bool(normalized_methods & {"daraja_paybill", "daraja_buygoods", "paybill", "buygoods"})
+        tenant_provider = str(tenant.get("payment_provider") or "").strip().lower()
+        if requested == "paystack" and (has_daraja or tenant_provider in {"daraja", "mpesa"}):
+            return "daraja"
         return "paystack" if requested == "paystack" else "daraja"
 
     methods = tenant.get("payment_methods") if isinstance(tenant.get("payment_methods"), list) else []

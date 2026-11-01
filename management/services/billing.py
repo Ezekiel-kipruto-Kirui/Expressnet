@@ -422,22 +422,32 @@ def _clean_daraja_config(source):
 
 
 def _platform_only_daraja_config():
-    mpesa_environment = os.getenv("MPESA_ENVIRONMENT")
-    use_mpesa_aliases_first = str(mpesa_environment or "").strip().lower() == "sandbox"
-    consumer_key = os.getenv("MPESA_CONSUMER_KEY") if use_mpesa_aliases_first else None
-    consumer_secret = os.getenv("MPESA_CONSUMER_SECRET") if use_mpesa_aliases_first else None
-    shortcode = (os.getenv("MPESA_SHORTCODE") or os.getenv("MPESA_BUSINESS_SHORTCODE")) if use_mpesa_aliases_first else None
-    passkey = os.getenv("MPESA_PASSKEY") if use_mpesa_aliases_first else None
-    till_number = (os.getenv("MPESA_TILL_NUMBER") or os.getenv("MPESA_BUSINESS_SHORTCODE")) if use_mpesa_aliases_first else None
-    shortcode_type = os.getenv("MPESA_SHORTCODE_TYPE") if use_mpesa_aliases_first else None
+    # Prefer the explicit Daraja variable family. Only fall back to the older
+    # MPESA aliases as a complete credential set for the selected environment.
+    daraja_environment = str(os.getenv("DARAJA_ENVIRONMENT") or os.getenv("MPESA_ENVIRONMENT") or "production").strip().lower()
+    sandbox = daraja_environment in {"sandbox", "test", "testing"}
+    if sandbox:
+        consumer_key = os.getenv("DARAJA_SANDBOX_CONSUMER_KEY") or os.getenv("MPESA_SANDBOX_CONSUMER_KEY") or os.getenv("MPESA_CONSUMER_KEY")
+        consumer_secret = os.getenv("DARAJA_SANDBOX_CONSUMER_SECRET") or os.getenv("MPESA_SANDBOX_CONSUMER_SECRET") or os.getenv("MPESA_CONSUMER_SECRET")
+        shortcode = os.getenv("DARAJA_SANDBOX_SHORTCODE") or os.getenv("MPESA_SANDBOX_SHORTCODE") or os.getenv("MPESA_SHORTCODE") or os.getenv("MPESA_BUSINESS_SHORTCODE")
+        passkey = os.getenv("DARAJA_SANDBOX_PASSKEY") or os.getenv("MPESA_SANDBOX_PASSKEY") or os.getenv("MPESA_PASSKEY")
+        till_number = os.getenv("DARAJA_SANDBOX_TILL_NUMBER") or os.getenv("MPESA_SANDBOX_TILL_NUMBER") or os.getenv("MPESA_TILL_NUMBER") or os.getenv("MPESA_BUSINESS_SHORTCODE")
+        shortcode_type = os.getenv("DARAJA_SANDBOX_SHORTCODE_TYPE") or os.getenv("MPESA_SANDBOX_SHORTCODE_TYPE") or os.getenv("MPESA_SHORTCODE_TYPE")
+    else:
+        consumer_key = os.getenv("DARAJA_CONSUMER_KEY") or os.getenv("MPESA_LIVE_CONSUMER_KEY") or os.getenv("MPESA_CONSUMER_KEY")
+        consumer_secret = os.getenv("DARAJA_CONSUMER_SECRET") or os.getenv("MPESA_LIVE_CONSUMER_SECRET") or os.getenv("MPESA_CONSUMER_SECRET")
+        shortcode = os.getenv("DARAJA_SHORTCODE") or os.getenv("MPESA_LIVE_SHORTCODE") or os.getenv("MPESA_SHORTCODE") or os.getenv("MPESA_BUSINESS_SHORTCODE")
+        passkey = os.getenv("DARAJA_PASSKEY") or os.getenv("MPESA_LIVE_PASSKEY") or os.getenv("MPESA_PASSKEY")
+        till_number = os.getenv("DARAJA_TILL_NUMBER") or os.getenv("MPESA_LIVE_TILL_NUMBER") or os.getenv("MPESA_TILL_NUMBER") or os.getenv("MPESA_BUSINESS_SHORTCODE")
+        shortcode_type = os.getenv("DARAJA_SHORTCODE_TYPE") or os.getenv("MPESA_LIVE_SHORTCODE_TYPE") or os.getenv("MPESA_SHORTCODE_TYPE")
     return {
-        "daraja_consumer_key": consumer_key or os.getenv("DARAJA_CONSUMER_KEY") or os.getenv("MPESA_CONSUMER_KEY"),
-        "daraja_consumer_secret": consumer_secret or os.getenv("DARAJA_CONSUMER_SECRET") or os.getenv("MPESA_CONSUMER_SECRET"),
-        "daraja_shortcode": shortcode or os.getenv("DARAJA_SHORTCODE") or os.getenv("MPESA_SHORTCODE") or os.getenv("MPESA_BUSINESS_SHORTCODE"),
-        "daraja_passkey": passkey or os.getenv("DARAJA_PASSKEY") or os.getenv("MPESA_PASSKEY"),
-        "daraja_till_number": till_number or os.getenv("DARAJA_TILL_NUMBER") or os.getenv("MPESA_TILL_NUMBER") or os.getenv("MPESA_BUSINESS_SHORTCODE"),
-        "daraja_environment": mpesa_environment or os.getenv("DARAJA_ENVIRONMENT") or "production",
-        "daraja_shortcode_type": shortcode_type or os.getenv("DARAJA_SHORTCODE_TYPE") or os.getenv("MPESA_SHORTCODE_TYPE") or "CustomerPayBillOnline",
+        "daraja_consumer_key": consumer_key,
+        "daraja_consumer_secret": consumer_secret,
+        "daraja_shortcode": shortcode,
+        "daraja_passkey": passkey,
+        "daraja_till_number": till_number,
+        "daraja_environment": daraja_environment,
+        "daraja_shortcode_type": shortcode_type or "CustomerPayBillOnline",
     }
 
 
@@ -762,7 +772,7 @@ def initiate_daraja_payment(tenant, payment_id, amount, phone, description=None,
     if str(data.get("ResponseCode") or "0") not in {"0", "00"} and not data.get("CheckoutRequestID"):
         logger.warning("Daraja rejected STK push for tenant=%s payment=%s method=%s response=%s", tenant_id, payment_id, payment_method, data)
         raise PaymentProviderError(
-            str(data.get("ResponseDescription") or data.get("errorMessage") or "Daraja rejected the payment request."),
+            "Could not start the M-Pesa payment. Please try again.",
             f"Daraja rejected STK push: {data}",
             502,
         )
@@ -770,7 +780,7 @@ def initiate_daraja_payment(tenant, payment_id, amount, phone, description=None,
         logger.warning("Daraja STK non-success response for tenant=%s payment=%s method=%s response=%s", tenant_id, payment_id, payment_method, data)
         raise PaymentProviderError(
             "Could not start the M-Pesa payment. Please try again.",
-            data.get("ResponseDescription") or data.get("errorMessage") or "Daraja rejected the STK push request",
+            f"Daraja rejected STK push: {data}",
             502,
         )
     logger.info(

@@ -873,7 +873,7 @@ def _public_pay_impl(request, tenant_id):
             exc.detail,
         )
         payment_ref.update({"status": "failed", "failed_at": iso_now(), "callback_result_desc": exc.detail})
-        return ok({"success": False, "message": exc.public_message, "paymentId": payment_ref.key}, exc.status_code)
+        return ok({"success": False, "message": "We could not start your payment just now. Please check your M-Pesa number and try again. If the problem continues, contact the service provider.", "paymentId": payment_ref.key}, exc.status_code)
     except Exception as exc:
         logger.exception(
             "Unexpected Daraja payment initiation error for tenant=%s payment=%s",
@@ -886,7 +886,8 @@ def _public_pay_impl(request, tenant_id):
 
 def _public_paystack_impl(request, tenant_id, tenant, pkg, data, phone, service_type, customer, access_username, pending_access_password, mac_address, router_ip, router_client_ip, router_client_mac, router_mac, link_login, dst, amount_payable):
     if str(os.getenv("PAYSTACK_MANUAL_PAYOUTS_ENABLED", "false")).strip().lower() not in {"1", "true", "yes", "on"}:
-        return ok({"success": False, "message": "Paystack withdrawals are not enabled yet. The platform owner must enable manual payouts with Paystack before accepting pooled payments."}, 503)
+        logger.warning("Paystack payment blocked because pooled payouts are disabled for tenant=%s", tenant_id)
+        return ok({"success": False, "message": "This payment method is temporarily unavailable. Please choose M-Pesa or contact the service provider."}, 503)
     reference = f"EN-{tenant_id}-{secrets.token_urlsafe(14)}".replace("_", "-")
     currency = str(os.getenv("PAYSTACK_CURRENCY") or ((ref("site_settings").get() or {}).get("paystack_currency")) or "KES").upper()
     platform_fee_percent = tenant_paystack_platform_fee_percent()
