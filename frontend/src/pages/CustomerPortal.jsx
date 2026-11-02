@@ -657,7 +657,7 @@ export default function CustomerPortal() {
               </div>
               <button type="button" className="btn-primary mt-5 w-full" onClick={pay} disabled={paying}>
                 <CreditCard size={18} />
-                {paying ? 'Sending payment prompt...' : 'Send M-Pesa Prompt'}
+                {paying ? 'Starting...' : 'Buy'}
               </button>
             </div>
           </section>

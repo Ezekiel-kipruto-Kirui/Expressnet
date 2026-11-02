@@ -43,6 +43,8 @@ from billing_api.services import (
     create_ppp_profile,
     configure_router_port,
     selected_daraja_method,
+    selected_collection_provider,
+    daraja_is_configured,
     initiate_daraja_payment,
     initiate_paystack_mpesa_stk,
     create_paystack_transfer_recipient,
@@ -788,14 +790,25 @@ def _public_pay_impl(request, tenant_id):
             return ok({"message": "Enter a valid TV MAC address"}, 400)
     access_username = mac_address if service_type == "tv" else ((customer or {}).get("username") or username or to_access_username(phone))
     pending_access_password = str((customer or {}).get("password") or secrets.token_hex(3).upper())
+    platform_provider = str((ref("site_settings").get() or {}).get("collection_provider") or "daraja")
     requested_provider = selected_collection_provider(
         tenant,
         data.get("provider") or data.get("payment_provider"),
-        (ref("site_settings").get() or {}).get("collection_provider"),
+        platform_provider,
     )
     if requested_provider == "paystack":
-        return _public_paystack_impl(request, tenant_id, tenant, pkg, data, phone, service_type, customer, access_username, pending_access_password, mac_address, router_ip, router_client_ip, router_client_mac, router_mac, link_login, dst, amount_payable)
-    daraja_method = selected_daraja_method(tenant, data.get("payment_method"))
+        paystack_enabled = str(os.getenv("PAYSTACK_MANUAL_PAYOUTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+        if paystack_enabled:
+            return _public_paystack_impl(request, tenant_id, tenant, pkg, data, phone, service_type, customer, access_username, pending_access_password, mac_address, router_ip, router_client_ip, router_client_mac, router_mac, link_login, dst, amount_payable)
+        # Paystack pooled checkout is intentionally disabled; fall back to Daraja
+        # when credentials are available so customers can still buy packages.
+        daraja_method = selected_daraja_method(tenant, data.get("payment_method"))
+        fallback_config = platform_daraja_config(tenant, daraja_method)
+        if not daraja_is_configured(fallback_config, daraja_method):
+            logger.warning("Public checkout unavailable tenant=%s: Paystack payouts disabled and Daraja not configured", tenant_id)
+            return ok({"success": False, "message": "Online payment is not configured for this service. Please contact the provider."}, 503)
+    else:
+        daraja_method = selected_daraja_method(tenant, data.get("payment_method"))
     daraja_config = platform_daraja_config(tenant, daraja_method)
     daraja_source = daraja_config.get("daraja_credential_source") or "platform"
     collection_account = "tenant_daraja" if daraja_source == "tenant" else "platform_daraja"

@@ -319,7 +319,7 @@ def upsert_router_profile(tenant, path, name, speed, session_timeout=None):
         rate_limit = normalize_rate_limit(speed)
         fields["rate-limit"] = rate_limit or ""
         if path == ("ppp", "profile"):
-            fields.setdefault("local-address", "172.31.0.1")
+            fields.setdefault("local-address", "192.168.88.1")
             fields.setdefault("remote-address", "Expressnet-pool")
         timeout = routeros_duration(session_timeout)
         if timeout and path in {("ppp", "profile"), ("ip", "hotspot", "user", "profile")}:
@@ -812,8 +812,8 @@ def ensure_hotspot_captive_portal(tenant, base_url=None):
         upsert_router_item(
             api,
             ("ip", "firewall", "nat"),
-            {"chain": "srcnat", "src-address": "172.31.0.0/16", "comment": "billing-saas hotspot masquerade"},
-            {"chain": "srcnat", "src-address": "172.31.0.0/16", "action": "masquerade", "comment": "billing-saas hotspot masquerade"},
+            {"chain": "srcnat", "src-address": "192.168.88.0/24", "comment": "billing-saas hotspot masquerade"},
+            {"chain": "srcnat", "src-address": "192.168.88.0/24", "action": "masquerade", "comment": "billing-saas hotspot masquerade"},
         )
         upsert_router_item(
             api,
@@ -821,7 +821,7 @@ def ensure_hotspot_captive_portal(tenant, base_url=None):
             {"name": profile_name},
             {
                 "name": profile_name,
-                "hotspot-address": "172.31.0.1",
+                "hotspot-address": "192.168.88.1",
                 "dns-name": "hot.spot",
                 "login-by": "cookie,http-pap,trial,mac-cookie",
                 "use-radius": "yes",
@@ -1115,13 +1115,13 @@ def configure_router_port(tenant, interface_name, service_type, profile_name="de
             api,
             ("ip", "pool"),
             {"name": "Expressnet-pool"},
-            {"name": "Expressnet-pool", "ranges": "172.31.0.2-172.31.255.254", "comment": "IP Pool created by Expressnet"},
+            {"name": "Expressnet-pool", "ranges": "192.168.88.2-192.168.88.254", "comment": "IP Pool created by Expressnet"},
         )
         upsert_router_item(
             api,
             ("ip", "address"),
             {"interface": managed_bridge, "comment": "Added by Expressnet"},
-            {"address": "172.31.0.1/16", "interface": managed_bridge, "comment": "Added by Expressnet"},
+            {"address": "192.168.88.1/24", "interface": managed_bridge, "comment": "Added by Expressnet"},
         )
         upsert_router_item(
             api,
@@ -1132,14 +1132,14 @@ def configure_router_port(tenant, interface_name, service_type, profile_name="de
         upsert_router_item(
             api,
             ("ip", "dhcp-server", "network"),
-            {"address": "172.31.0.0/16"},
-            {"address": "172.31.0.0/16", "gateway": "172.31.0.1", "dns-server": "172.31.0.1"},
+            {"address": "192.168.88.0/24"},
+            {"address": "192.168.88.0/24", "gateway": "192.168.88.1", "dns-server": "192.168.88.1"},
         )
         upsert_router_item(
             api,
             ("ip", "firewall", "nat"),
-            {"chain": "srcnat", "src-address": "172.31.0.0/16", "comment": "billing-saas hotspot masquerade"},
-            {"chain": "srcnat", "src-address": "172.31.0.0/16", "action": "masquerade", "comment": "billing-saas hotspot masquerade"},
+            {"chain": "srcnat", "src-address": "192.168.88.0/24", "comment": "billing-saas hotspot masquerade"},
+            {"chain": "srcnat", "src-address": "192.168.88.0/24", "action": "masquerade", "comment": "billing-saas hotspot masquerade"},
         )
         _isolate_customer_bridge_from_router_management(api, managed_bridge)
 
@@ -1349,10 +1349,10 @@ def _build_port_command_script(interface_name, service_type, profile_name, porta
             f':do {{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=tcp dst-port=53 place-before=[find comment="defconf: drop all not coming from LAN"] comment="billing-saas allow hotspot dns" }} on-error={{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=tcp dst-port=53 comment="billing-saas allow hotspot dns" }}; '
             f':do {{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=udp dst-port=67,68 place-before=[find comment="defconf: drop all not coming from LAN"] comment="billing-saas allow hotspot dhcp" }} on-error={{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=udp dst-port=67,68 comment="billing-saas allow hotspot dhcp" }}; '
             f':do {{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=tcp dst-port=80,443,64872-64875 place-before=[find comment="defconf: drop all not coming from LAN"] comment="billing-saas allow hotspot web-proxy" }} on-error={{ /ip firewall filter add chain=input action=accept in-interface="{_rsc_escape(bridge_name)}" protocol=tcp dst-port=80,443,64872-64875 comment="billing-saas allow hotspot web-proxy" }}; '
-            f':do {{ /ip hotspot profile add name="Expressnet-profile" hotspot-address=172.31.0.1 dns-name=hot.spot login-by=cookie,http-pap,trial,mac-cookie use-radius=yes html-directory=Expressnet-hotspot radius-interim-update=10m comment="Expressnet captive portal: {portal_comment}" }} '
-            f'on-error={{ /ip hotspot profile set [find name="Expressnet-profile"] hotspot-address=172.31.0.1 dns-name=hot.spot login-by=cookie,http-pap,trial,mac-cookie use-radius=yes html-directory=Expressnet-hotspot radius-interim-update=10m comment="Expressnet captive portal: {portal_comment}" }}; '
+            f':do {{ /ip hotspot profile add name="Expressnet-profile" hotspot-address=192.168.88.1 dns-name=hot.spot login-by=cookie,http-pap,trial,mac-cookie use-radius=yes html-directory=Expressnet-hotspot radius-interim-update=10m comment="Expressnet captive portal: {portal_comment}" }} '
+            f'on-error={{ /ip hotspot profile set [find name="Expressnet-profile"] hotspot-address=192.168.88.1 dns-name=hot.spot login-by=cookie,http-pap,trial,mac-cookie use-radius=yes html-directory=Expressnet-hotspot radius-interim-update=10m comment="Expressnet captive portal: {portal_comment}" }}; '
             f':do {{ /ip firewall nat remove [find comment="billing-saas hotspot masquerade"] }} on-error={{}}; '
-            f':do {{ /ip firewall nat add chain=srcnat src-address=172.31.0.0/16 action=masquerade comment="billing-saas hotspot masquerade" }} on-error={{ :log warning "Billing SaaS: failed to add hotspot masquerade" }}; '
+            f':do {{ /ip firewall nat add chain=srcnat src-address=192.168.88.0/24 action=masquerade comment="billing-saas hotspot masquerade" }} on-error={{ :log warning "Billing SaaS: failed to add hotspot masquerade" }}; '
             + "".join(
                 f':do {{ /ip hotspot walled-garden add action=allow dst-host="{_rsc_escape(h)}" comment="billing-saas captive portal access" }} on-error={{ :log warning "Billing SaaS: walled-garden add failed" }}; '
                 for h in walled_garden_hosts(tenant, portal_host)
@@ -1402,10 +1402,10 @@ def _build_port_command_script(interface_name, service_type, profile_name, porta
         f':do {{ /interface enable [find name="{interface_name}"] }} on-error={{ :log warning "Billing SaaS: failed to enable interface {interface_name}" }}; '
         f'/interface bridge port remove [find interface="{interface_name}"]; '
         f':if ([:len [/interface bridge find name="{bridge_name}"]] = 0) do={{ /interface bridge add name="{bridge_name}" comment="Created by Expressnet" }}; '
-        f':do {{ /ip pool add name=Expressnet-pool ranges=172.31.0.2-172.31.255.254 comment="IP Pool created by Expressnet" }} on-error={{ /ip pool set [find name=Expressnet-pool] ranges=172.31.0.2-172.31.255.254 comment="IP Pool created by Expressnet" }}; '
-        f':do {{ /ip address add address=172.31.0.1/16 interface="{bridge_name}" comment="Added by Expressnet" }} on-error={{ /ip address set [find interface="{bridge_name}" comment="Added by Expressnet"] address=172.31.0.1/16 interface="{bridge_name}" }}; '
+        f':do {{ /ip pool add name=Expressnet-pool ranges=192.168.88.2-192.168.88.254 comment="IP Pool created by Expressnet" }} on-error={{ /ip pool set [find name=Expressnet-pool] ranges=192.168.88.2-192.168.88.254 comment="IP Pool created by Expressnet" }}; '
+        f':do {{ /ip address add address=192.168.88.1/24 interface="{bridge_name}" comment="Added by Expressnet" }} on-error={{ /ip address set [find interface="{bridge_name}" comment="Added by Expressnet"] address=192.168.88.1/24 interface="{bridge_name}" }}; '
         f':do {{ /ip dhcp-server add name=Expressnet-dhcp interface="{bridge_name}" address-pool=Expressnet-pool lease-time=4h disabled=no }} on-error={{ /ip dhcp-server set [find name=Expressnet-dhcp] interface="{bridge_name}" address-pool=Expressnet-pool lease-time=4h disabled=no }}; '
-        f':do {{ /ip dhcp-server network add address=172.31.0.0/16 gateway=172.31.0.1 dns-server=172.31.0.1 }} on-error={{ /ip dhcp-server network set [find address=172.31.0.0/16] gateway=172.31.0.1 dns-server=172.31.0.1 }}; '
+        f':do {{ /ip dhcp-server network add address=192.168.88.0/24 gateway=192.168.88.1 dns-server=192.168.88.1 }} on-error={{ /ip dhcp-server network set [find address=192.168.88.0/24] gateway=192.168.88.1 dns-server=192.168.88.1 }}; '
         f'{customer_bridge_isolation}'
         f'/interface bridge port add bridge="{bridge_name}" interface="{interface_name}"; '
         f':do {{ /interface bridge port set [find interface="{interface_name}"] disabled=no }} on-error={{}}; '

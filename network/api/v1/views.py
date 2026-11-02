@@ -787,7 +787,7 @@ def _router_ip_from_captive_data(data, tenant=None, fallback_payment=None):
         or data.get("server-address")
         or (fallback_payment or {}).get("router_ip")
         or (tenant or {}).get("mikrotik_hotspot_address")
-        or "172.31.0.1"
+        or "192.168.88.1"
     ).strip()
 
 
@@ -2777,8 +2777,8 @@ def _customer_secret_script(customer):
     ppp_profile_script = (
         f':if ("{profile}" != "default") do={{ '
         f':if ([:len [/ppp profile find name="{profile}"]] = 0) do={{'
-        f' /ppp profile add name="{profile}" local-address=172.31.0.1 remote-address=Expressnet-pool{rate_limit_field} }} '
-        f'else={{ /ppp profile set [find name="{profile}"] local-address=172.31.0.1 remote-address=Expressnet-pool{rate_limit_field} }}; }};'
+        f' /ppp profile add name="{profile}" local-address=192.168.88.1 remote-address=Expressnet-pool{rate_limit_field} }} '
+        f'else={{ /ppp profile set [find name="{profile}"] local-address=192.168.88.1 remote-address=Expressnet-pool{rate_limit_field} }}; }};'
     )
     hotspot_profile_script = (
         f':if ("{profile}" != "default") do={{ '
@@ -3090,8 +3090,8 @@ def _package_profile_script(package):
             fasttrack_script
             + f':do {{ '
             f':if ([:len [/ppp profile find name="{name}"]] = 0) do={{'
-            f' /ppp profile add name="{name}" local-address=172.31.0.1 remote-address=Expressnet-pool{rate_limit_field}{session_timeout_field} comment="billing-saas-package" }} '
-            f'else={{ /ppp profile set [find name="{name}"] local-address=172.31.0.1 remote-address=Expressnet-pool{rate_limit_field}{session_timeout_field} comment="billing-saas-package" }}; '
+            f' /ppp profile add name="{name}" local-address=192.168.88.1 remote-address=Expressnet-pool{rate_limit_field}{session_timeout_field} comment="billing-saas-package" }} '
+            f'else={{ /ppp profile set [find name="{name}"] local-address=192.168.88.1 remote-address=Expressnet-pool{rate_limit_field}{session_timeout_field} comment="billing-saas-package" }}; '
             f'}} on-error={{ :log warning "Billing SaaS agent: PPPoE profile sync failed for {name}"; :error "PPPoE profile sync failed for {name}" }};'
             f':if ([:len [/ppp profile find name="{name}"]] = 0) do={{ :error "PPPoE profile missing after sync: {name}" }};'
         )
@@ -3333,6 +3333,61 @@ def _radius_server_config(tenant, wg_config=None, base_url=""):
         "disabled_reason": "private RADIUS address requires a ready WireGuard tunnel" if private_without_tunnel else "",
         "mode": "wireguard" if wg_config.get("ready") and server_ip == wg_config.get("tunnel_ip") else "direct",
     }
+
+
+def _router_lan_config(tenant):
+    """Resolve and validate the LAN settings embedded in a RouterOS script."""
+    lan_cidr = str(
+        os.getenv("MIKROTIK_LAN_CIDR")
+        or (tenant or {}).get("mikrotik_lan_cidr")
+        or "192.168.88.1/24"
+    ).strip()
+    try:
+        interface = ipaddress.ip_interface(lan_cidr)
+    except ValueError as exc:
+        raise ValueError("MIKROTIK_LAN_CIDR must be a valid IPv4 interface, for example 192.168.88.1/24") from exc
+    if interface.version != 4 or interface.ip not in interface.network or interface.ip in {interface.network.network_address, interface.network.broadcast_address}:
+        raise ValueError("MIKROTIK_LAN_CIDR must use a usable IPv4 host address")
+
+    lan_gateway = str(interface.ip)
+    lan_network = str(
+        os.getenv("MIKROTIK_LAN_NETWORK")
+        or (tenant or {}).get("mikrotik_lan_network")
+        or interface.network
+    ).strip()
+    try:
+        network = ipaddress.ip_network(lan_network, strict=False)
+    except ValueError as exc:
+        raise ValueError("MIKROTIK_LAN_NETWORK must be a valid IPv4 network") from exc
+    if network.version != 4 or interface.ip not in network:
+        raise ValueError("MIKROTIK_LAN_CIDR gateway must belong to MIKROTIK_LAN_NETWORK")
+
+    dhcp_pool = str(
+        os.getenv("MIKROTIK_DHCP_POOL")
+        or (tenant or {}).get("mikrotik_dhcp_pool")
+        or f"{network.network_address + 2}-{network.broadcast_address - 1}"
+    ).strip()
+    pool_ips = []
+    try:
+        for part in dhcp_pool.split(","):
+            part = part.strip()
+            if "-" in part:
+                start_text, end_text = (item.strip() for item in part.split("-", 1))
+                start_ip, end_ip = ipaddress.ip_address(start_text), ipaddress.ip_address(end_text)
+                if start_ip.version != 4 or end_ip.version != 4 or int(start_ip) > int(end_ip):
+                    raise ValueError
+                pool_ips.extend((start_ip, end_ip))
+            else:
+                address = ipaddress.ip_address(part)
+                if address.version != 4:
+                    raise ValueError
+                pool_ips.append(address)
+    except ValueError as exc:
+        raise ValueError("MIKROTIK_DHCP_POOL must contain IPv4 addresses or start-end ranges") from exc
+    for address in pool_ips:
+        if address not in network or address == interface.ip or address in {network.network_address, network.broadcast_address}:
+            raise ValueError("MIKROTIK_DHCP_POOL addresses must be usable hosts in the LAN network and must exclude the gateway")
+    return {"lan_cidr": lan_cidr, "lan_gateway": lan_gateway, "lan_network": str(network), "dhcp_pool": dhcp_pool}
 
 @csrf_exempt
 @api_view(["GET"])
@@ -3739,10 +3794,19 @@ def router_provision_script(request, token):
     callback_join = "&" if "?" in callback_url else "?"
     bridge_name = mikrotik_managed_bridge_name(tenant)
     wan_interface = str(os.getenv("MIKROTIK_WAN_INTERFACE") or tenant.get("mikrotik_wan_interface") or "ether1").strip()
-    lan_cidr = str(os.getenv("MIKROTIK_LAN_CIDR") or tenant.get("mikrotik_lan_cidr") or "172.31.0.1/16").strip()
-    lan_gateway = lan_cidr.split("/", 1)[0]
-    lan_network = str(os.getenv("MIKROTIK_LAN_NETWORK") or tenant.get("mikrotik_lan_network") or "172.31.0.0/16").strip()
-    dhcp_pool = str(os.getenv("MIKROTIK_DHCP_POOL") or tenant.get("mikrotik_dhcp_pool") or "172.31.0.2-172.31.255.254").strip()
+    try:
+        lan_config = _router_lan_config(tenant)
+    except ValueError as exc:
+        logger.error("MikroTik provisioning tenant=%s has invalid LAN settings: %s", tenant_id, exc)
+        return HttpResponse(
+            f':log error "Billing SaaS: invalid router LAN settings ({_rsc_escape(str(exc))}); update the LAN gateway, subnet, and DHCP pool in tenant settings"; :error "Invalid router LAN settings";\n',
+            status=400,
+            content_type="text/plain",
+        )
+    lan_cidr = lan_config["lan_cidr"]
+    lan_gateway = lan_config["lan_gateway"]
+    lan_network = lan_config["lan_network"]
+    dhcp_pool = lan_config["dhcp_pool"]
     hotspot_dns_name = str(os.getenv("MIKROTIK_HOTSPOT_DNS_NAME") or tenant.get("mikrotik_hotspot_dns_name") or "hot.spot").strip()
     hotspot_profile_name = "Expressnet-profile"
     hotspot_server_name = "Expressnet-hotspot"
