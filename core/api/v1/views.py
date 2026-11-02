@@ -853,7 +853,7 @@ def public_base_url(request):
     request_url = normalize_public_url(f"{forwarded_proto}://{host}")
 
     candidates = [getattr(settings, "PUBLIC_APP_URL", ""), os.getenv("PUBLIC_APP_URL")]
-    if settings.DEBUG and ("localhost" in request_url or "127.0.0.1" in request_url):
+    if settings.DEBUG:
         candidates = [request_url]
     if request_url and "localhost" not in request_url and "127.0.0.1" not in request_url:
         candidates.insert(0, request_url)

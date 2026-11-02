@@ -512,12 +512,17 @@ def public_base_url(request):
     forwarded_proto = (request.META.get("HTTP_X_FORWARDED_PROTO") or request.scheme or "https").split(",")[0].strip()
     request_url = normalize_public_url(f"{forwarded_proto}://{host}")
 
+    # In local development the request host identifies the interface the user
+    # opened the app through (localhost, LAN IP, or a tunnel). Use that host so
+    # generated router commands can reach this running instance.
+    if settings.DEBUG:
+        return request_url
+
     candidates = [
+        request_url,
         os.getenv("PUBLIC_APP_URL"),
         getattr(settings, "PUBLIC_APP_URL", ""),
     ]
-    if request_url and "localhost" not in request_url and "127.0.0.1" not in request_url:
-        candidates.append(request_url)
     if not settings.DEBUG:
         candidates = [item for item in candidates if item and "localhost" not in item and "127.0.0.1" not in item]
     configured = next((item for item in candidates if item), "")
