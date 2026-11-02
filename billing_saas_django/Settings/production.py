@@ -9,6 +9,16 @@ DEBUG = False
 RATE_LIMIT_ENABLED = env_bool("RATE_LIMIT_ENABLED", True)
 TENANT_LOGIN_2FA_ENABLED = env_bool("TENANT_LOGIN_2FA_ENABLED", False)
 
+# Tenant sign-in domains in production must use the public DNS domain. A local
+# value such as localhost:8000 may be present in a developer's environment and
+# must never leak into newly created production tenant URLs.
+configured_tenant_domain = (os.getenv("TENANT_BASE_DOMAIN") or PUBLIC_BASE_DOMAIN).strip().lower()
+if configured_tenant_domain.startswith(("http://", "https://")):
+    configured_tenant_domain = configured_tenant_domain.split("://", 1)[1]
+TENANT_BASE_DOMAIN = configured_tenant_domain.split("/", 1)[0].split(":", 1)[0].strip(".")
+if not TENANT_BASE_DOMAIN or TENANT_BASE_DOMAIN in {"localhost", "127.0.0.1"}:
+    TENANT_BASE_DOMAIN = PUBLIC_BASE_DOMAIN
+
 if not os.getenv("EMAIL_BACKEND"):
     EMAIL_BACKEND = "billing_api.email_backend.IPv4EmailBackend"
 
@@ -41,13 +51,21 @@ RAILWAY_ALLOWED_HOSTS = [
     "stumpiest-caudally-eloy.ngrok-free.dev",
     "expressnetbilling.com",
 ]
-ALLOWED_HOSTS = sorted({*RAILWAY_ALLOWED_HOSTS, f".{PUBLIC_BASE_DOMAIN}", *env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")})
+ALLOWED_HOSTS = sorted(
+    {
+        *RAILWAY_ALLOWED_HOSTS,
+        f".{PUBLIC_BASE_DOMAIN}",
+        f".{TENANT_BASE_DOMAIN}",
+        *env_list("ALLOWED_HOSTS", "localhost,127.0.0.1"),
+    }
+)
 CSRF_TRUSTED_ORIGINS = sorted(
     {
         "https://web-production-b9d86.up.railway.app",
         "https://stumpiest-caudally-eloy.ngrok-free.dev",
         "https://expressnetbilling.com",
         f"https://*.{PUBLIC_BASE_DOMAIN}",
+        f"https://*.{TENANT_BASE_DOMAIN}",
         *env_list("CSRF_TRUSTED_ORIGINS"),
     }
 )

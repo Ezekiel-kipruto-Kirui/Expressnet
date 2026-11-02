@@ -420,7 +420,14 @@ def tenant_slug(value):
 
 
 def tenant_portal_domain(slug):
-    base_domain = str(os.getenv("TENANT_BASE_DOMAIN") or os.getenv("PUBLIC_BASE_DOMAIN") or os.getenv("SAAS_PORTAL_HOST") or os.getenv("PUBLIC_APP_URL") or "").strip().rstrip("/")
+    base_domain = str(
+        getattr(settings, "TENANT_BASE_DOMAIN", "")
+        or os.getenv("TENANT_BASE_DOMAIN")
+        or os.getenv("PUBLIC_BASE_DOMAIN")
+        or os.getenv("SAAS_PORTAL_HOST")
+        or os.getenv("PUBLIC_APP_URL")
+        or ""
+    ).strip().rstrip("/")
     base_domain = base_domain.replace("https://", "").replace("http://", "").strip("/")
     if not base_domain:
         base_domain = "expressnetbilling.com"

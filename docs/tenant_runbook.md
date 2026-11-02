@@ -10,11 +10,18 @@ Set these environment variables on a PostgreSQL-backed environment:
 
 ```bash
 USE_DJANGO_TENANTS=true
-TENANT_BASE_DOMAIN=expressnet.app
+TENANT_BASE_DOMAIN=expressnetbilling.com
 DATABASE_URL=postgresql://...
 ```
 
 SQLite cannot run schema-per-tenant mode.
+
+For production tenant login URLs such as `citynet.expressnetbilling.com`, point
+the base domain and wildcard (`*.expressnetbilling.com`) DNS records at the web
+application and configure wildcard TLS coverage on the hosting platform. Set
+`PUBLIC_BASE_DOMAIN` and `TENANT_BASE_DOMAIN` to `expressnetbilling.com` in the
+production environment. Production settings fall back to `PUBLIC_BASE_DOMAIN`
+if `TENANT_BASE_DOMAIN` is missing or set to a local host.
 
 ## Migrate schemas
 
