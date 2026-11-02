@@ -8,7 +8,7 @@ import {
   Router,
   Wifi,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import api from '../api/axios';
 
@@ -41,6 +41,7 @@ export default function MikrotikSettings() {
   const [selectedPorts, setSelectedPorts] = useState([]);
   const [routerName, setRouterName] = useState('');
   const [migrationMode, setMigrationMode] = useState(false);
+  const provisionRequestRef = useRef({ key: '', promise: null, data: null });
 
   const configured = useMemo(
     () => Boolean(
@@ -129,17 +130,40 @@ export default function MikrotikSettings() {
   }
 
   async function loadProvisionCommand() {
+    const params = new URLSearchParams();
+    if (isAddingRouter) params.set('fresh', '1');
+    if (migrationMode) params.set('migrate', '1');
+    const name = routerName.trim();
+    if (name) params.set('name', name);
+    const query = params.toString();
+    const requestKey = query || 'default';
+    const previous = provisionRequestRef.current;
+    if (previous.key === requestKey) {
+      if (previous.data) {
+        setProvision(previous.data);
+        return previous.data;
+      }
+      if (previous.promise) return previous.promise;
+    }
+
+    const request = api.get(`/router/provision-command${query ? `?${query}` : ''}`)
+      .then(({ data }) => {
+        provisionRequestRef.current = { key: requestKey, promise: null, data };
+        setProvision(data);
+        return data;
+      })
+      .catch((error) => {
+        if (provisionRequestRef.current.key === requestKey) {
+          provisionRequestRef.current = { key: '', promise: null, data: null };
+          toast.error(error.response?.data?.message || 'Failed to create provisioning command');
+        }
+        return null;
+      });
+    provisionRequestRef.current = { key: requestKey, promise: request, data: null };
     try {
-      const params = new URLSearchParams();
-      if (isAddingRouter) params.set('fresh', '1');
-      if (migrationMode) params.set('migrate', '1');
-      const name = routerName.trim();
-      if (name) params.set('name', name);
-      const query = params.toString();
-      const { data } = await api.get(`/router/provision-command${query ? `?${query}` : ''}`);
-      setProvision(data);
-    } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to create provisioning command');
+      return await request;
+    } catch {
+      return null;
     }
   }
 
